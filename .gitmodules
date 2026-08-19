@@ -1,0 +1,3 @@
+[submodule "source/ddnet"]
+	path = source/ddnet
+	url = https://github.com/ddnet/ddnet.git

@@ -1,0 +1,19 @@
+[Unit]
+Description=tee_world_candidate_testing DDNet server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/tee_world_candidate_testing/server
+ExecStart=/srv/tee_world_candidate_testing/build/ddnet/DDNet-Server
+Restart=on-failure
+RestartSec=3s
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+UMask=0077
+StandardOutput=append:/srv/tee_world_candidate_testing/server/logs/console.log
+StandardError=append:/srv/tee_world_candidate_testing/server/logs/console.log
+
+[Install]
+WantedBy=default.target

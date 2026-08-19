@@ -1,0 +1,10 @@
+.toolchain/
+build/
+server/demos/
+server/dumps/
+server/ghosts/
+server/logs/
+server/run/
+server/secrets.cfg
+server/state/
+server/teehistorian/
