@@ -6,6 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/srv/tee_world_candidate_testing/server
+ExecStartPre=/usr/bin/test -r /srv/multi_tas/data/maps/Tutorial.map
+ExecStartPre=/usr/bin/test -d /srv/multi_tas/data/maps/tw_maps/ddnet-maps-master/types
+ExecStartPre=/usr/bin/test -d /srv/multi_tas/data/maps/tw_maps/KoGmaps-main
 ExecStart=/srv/tee_world_candidate_testing/build/ddnet/DDNet-Server
 Restart=on-failure
 RestartSec=3s

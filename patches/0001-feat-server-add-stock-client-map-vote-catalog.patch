@@ -1,0 +1,1353 @@
+From e6fe864d50606808680bb683ea56bdfbf75a8316 Mon Sep 17 00:00:00 2001
+From: root <root@vps-b11ef210.vps.ovh.net>
+Date: Thu, 20 Aug 2026 00:49:50 +0000
+Subject: [PATCH] feat(server): add stock-client map vote catalog
+
+---
+ CMakeLists.txt                       |   3 +
+ src/engine/shared/config_variables.h |   1 +
+ src/game/server/gamecontext.cpp      | 238 ++++++++++++--
+ src/game/server/gamecontext.h        |   6 +
+ src/game/server/map_vote_catalog.cpp | 453 +++++++++++++++++++++++++++
+ src/game/server/map_vote_catalog.h   |  97 ++++++
+ src/game/server/player.cpp           |   3 +
+ src/game/server/player.h             |   3 +
+ src/test/map_vote_catalog_test.cpp   | 282 +++++++++++++++++
+ 9 files changed, 1060 insertions(+), 26 deletions(-)
+ create mode 100644 src/game/server/map_vote_catalog.cpp
+ create mode 100644 src/game/server/map_vote_catalog.h
+ create mode 100644 src/test/map_vote_catalog_test.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3695ae7..50e1a19 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2979,6 +2979,8 @@ if(SERVER)
+     gameworld.h
+     interactions.cpp
+     interactions.h
++    map_vote_catalog.cpp
++    map_vote_catalog.h
+     mutes.cpp
+     player.cpp
+     player.h
+@@ -3239,6 +3241,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
+     json_test.cpp
+     jsonwriter_test.cpp
+     linereader_test.cpp
++    map_vote_catalog_test.cpp
+     mapbugs_test.cpp
+     mapitems_test.cpp
+     math_test.cpp
+diff --git a/src/engine/shared/config_variables.h b/src/engine/shared/config_variables.h
+index b091e83..20587ac 100644
+--- a/src/engine/shared/config_variables.h
++++ b/src/engine/shared/config_variables.h
+@@ -596,6 +596,7 @@ MACRO_CONFIG_INT(SvTeam, sv_team, 1, 0, 3, CFGFLAG_SERVER | CFGFLAG_GAME, "Teams
+ MACRO_CONFIG_INT(SvMinTeamSize, sv_min_team_size, 2, 1, SERVER_MAX_CLIENTS, CFGFLAG_SERVER | CFGFLAG_GAME, "Minimum team size (finishing in a team smaller than this size gives you no teamrank)")
+ MACRO_CONFIG_INT(SvMaxTeamSize, sv_max_team_size, SERVER_MAX_CLIENTS, 1, SERVER_MAX_CLIENTS, CFGFLAG_SERVER | CFGFLAG_GAME, "Maximum team size")
+ MACRO_CONFIG_INT(SvMapVote, sv_map_vote, 1, 0, 1, CFGFLAG_SERVER, "Whether to allow /map")
++MACRO_CONFIG_INT(SvMapVoteCatalog, sv_map_vote_catalog, 0, 0, 1, CFGFLAG_SERVER, "Publish the browsable DDRace and Gores map catalog on every map")
+ 
+ MACRO_CONFIG_STR(SvAnnouncementFilename, sv_announcement_filename, IO_MAX_PATH_LENGTH, "announcement.txt", CFGFLAG_SERVER, "File which contains the announcements, one on each line")
+ MACRO_CONFIG_INT(SvAnnouncementInterval, sv_announcement_interval, 120, 1, 9999, CFGFLAG_SERVER, "The time (minutes) for how often an announcement will be displayed from the announcement file")
+diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
+index e9a7f6f..ca8e0e4 100644
+--- a/src/game/server/gamecontext.cpp
++++ b/src/game/server/gamecontext.cpp
+@@ -1597,6 +1597,64 @@ const CVoteOptionServer *CGameContext::GetVoteOption(int Index) const
+ 	return pCurrent;
+ }
+ 
++CMapVoteCatalog::SPageId CGameContext::MapVotePage(int ClientId) const
++{
++	if(ClientId < 0 || ClientId >= MAX_CLIENTS || !m_apPlayers[ClientId])
++		return {};
++	CMapVoteCatalog::SPageId Page{
++		static_cast<CMapVoteCatalog::EPage>(m_apPlayers[ClientId]->m_MapVotePage),
++		m_apPlayers[ClientId]->m_MapVoteType};
++	if(m_MapVoteCatalog.Active() && m_MapVoteCatalog.OptionCount(Page) > 0)
++		return Page;
++	return {};
++}
++
++void CGameContext::NavigateMapVotes(int ClientId, CMapVoteCatalog::SPageId Page)
++{
++	if(!m_MapVoteCatalog.Active() || ClientId < 0 || ClientId >= MAX_CLIENTS || !m_apPlayers[ClientId])
++		return;
++	if(m_MapVoteCatalog.OptionCount(Page) <= 0)
++		Page = {};
++
++	CNetMsg_Sv_VoteClearOptions ClearMsg;
++	Server()->SendPackMsg(&ClearMsg, MSGFLAG_VITAL, ClientId);
++	m_apPlayers[ClientId]->m_MapVotePage = static_cast<int>(Page.m_Page);
++	m_apPlayers[ClientId]->m_MapVoteType = Page.m_Type;
++	m_apPlayers[ClientId]->m_SendVoteIndex = 0;
++}
++
++bool CGameContext::PublishMapVoteCatalog()
++{
++	std::string Error;
++	if(!m_MapVoteCatalog.Build(Storage(), Console(), &Error))
++	{
++		char aMessage[256];
++		str_format(aMessage, sizeof(aMessage), "failed to publish map catalog: %s", Error.c_str());
++		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "map-votes", aMessage);
++		return false;
++	}
++
++	// One immutable catalog owns all map selections. Keeping the legacy list
++	// would leave a second command authority reachable through forged calls.
++	m_pVoteOptionHeap->Reset();
++	m_pVoteOptionFirst = nullptr;
++	m_pVoteOptionLast = nullptr;
++	m_NumVoteOptions = 0;
++
++	CNetMsg_Sv_VoteClearOptions ClearMsg;
++	Server()->SendPackMsg(&ClearMsg, MSGFLAG_VITAL, -1);
++	for(CPlayer *pPlayer : m_apPlayers)
++	{
++		if(!pPlayer)
++			continue;
++		pPlayer->m_MapVotePage = static_cast<int>(CMapVoteCatalog::EPage::ROOT);
++		pPlayer->m_MapVoteType = -1;
++		pPlayer->m_LastMapVoteNavigationTick = -1;
++		pPlayer->m_SendVoteIndex = 0;
++	}
++	return true;
++}
++
+ void CGameContext::ProgressVoteOptions(int ClientId)
+ {
+ 	CPlayer *pPl = m_apPlayers[ClientId];
+@@ -1604,10 +1662,17 @@ void CGameContext::ProgressVoteOptions(int ClientId)
+ 	if(pPl->m_SendVoteIndex == -1)
+ 		return; // we didn't start sending options yet
+ 
+-	if(pPl->m_SendVoteIndex > m_NumVoteOptions)
+-		return; // shouldn't happen / fail silently
++	const bool MapCatalog = m_MapVoteCatalog.Active();
++	const CMapVoteCatalog::SPageId Page = MapVotePage(ClientId);
++	const int NumOptions = MapCatalog ? m_MapVoteCatalog.OptionCount(Page) : m_NumVoteOptions;
++	if(pPl->m_SendVoteIndex > NumOptions)
++	{
++		CNetMsg_Sv_VoteClearOptions ClearMsg;
++		Server()->SendPackMsg(&ClearMsg, MSGFLAG_VITAL, ClientId);
++		pPl->m_SendVoteIndex = 0;
++	}
+ 
+-	int VotesLeft = m_NumVoteOptions - pPl->m_SendVoteIndex;
++	int VotesLeft = NumOptions - pPl->m_SendVoteIndex;
+ 	int NumVotesToSend = std::min(g_Config.m_SvSendVotesPerTick, VotesLeft);
+ 
+ 	if(!VotesLeft)
+@@ -1637,31 +1702,44 @@ void CGameContext::ProgressVoteOptions(int ClientId)
+ 	OptionMsg.m_pDescription14 = "";
+ 
+ 	// get current vote option by index
+-	const CVoteOptionServer *pCurrent = GetVoteOption(pPl->m_SendVoteIndex);
++	const CVoteOptionServer *pCurrent = MapCatalog ? nullptr : GetVoteOption(pPl->m_SendVoteIndex);
+ 
+-	while(CurIndex < NumVotesToSend && pCurrent != nullptr)
++	while(CurIndex < NumVotesToSend)
+ 	{
++		const CMapVoteCatalog::SEntry *pMapEntry = MapCatalog ? m_MapVoteCatalog.OptionAt(Page, pPl->m_SendVoteIndex + CurIndex) : nullptr;
++		const char *pDescription = pMapEntry ? pMapEntry->m_Description.c_str() : pCurrent ? pCurrent->m_aDescription :
++												     nullptr;
++		if(!pDescription)
++			break;
+ 		switch(CurIndex)
+ 		{
+-		case 0: OptionMsg.m_pDescription0 = pCurrent->m_aDescription; break;
+-		case 1: OptionMsg.m_pDescription1 = pCurrent->m_aDescription; break;
+-		case 2: OptionMsg.m_pDescription2 = pCurrent->m_aDescription; break;
+-		case 3: OptionMsg.m_pDescription3 = pCurrent->m_aDescription; break;
+-		case 4: OptionMsg.m_pDescription4 = pCurrent->m_aDescription; break;
+-		case 5: OptionMsg.m_pDescription5 = pCurrent->m_aDescription; break;
+-		case 6: OptionMsg.m_pDescription6 = pCurrent->m_aDescription; break;
+-		case 7: OptionMsg.m_pDescription7 = pCurrent->m_aDescription; break;
+-		case 8: OptionMsg.m_pDescription8 = pCurrent->m_aDescription; break;
+-		case 9: OptionMsg.m_pDescription9 = pCurrent->m_aDescription; break;
+-		case 10: OptionMsg.m_pDescription10 = pCurrent->m_aDescription; break;
+-		case 11: OptionMsg.m_pDescription11 = pCurrent->m_aDescription; break;
+-		case 12: OptionMsg.m_pDescription12 = pCurrent->m_aDescription; break;
+-		case 13: OptionMsg.m_pDescription13 = pCurrent->m_aDescription; break;
+-		case 14: OptionMsg.m_pDescription14 = pCurrent->m_aDescription; break;
++		case 0: OptionMsg.m_pDescription0 = pDescription; break;
++		case 1: OptionMsg.m_pDescription1 = pDescription; break;
++		case 2: OptionMsg.m_pDescription2 = pDescription; break;
++		case 3: OptionMsg.m_pDescription3 = pDescription; break;
++		case 4: OptionMsg.m_pDescription4 = pDescription; break;
++		case 5: OptionMsg.m_pDescription5 = pDescription; break;
++		case 6: OptionMsg.m_pDescription6 = pDescription; break;
++		case 7: OptionMsg.m_pDescription7 = pDescription; break;
++		case 8: OptionMsg.m_pDescription8 = pDescription; break;
++		case 9: OptionMsg.m_pDescription9 = pDescription; break;
++		case 10: OptionMsg.m_pDescription10 = pDescription; break;
++		case 11: OptionMsg.m_pDescription11 = pDescription; break;
++		case 12: OptionMsg.m_pDescription12 = pDescription; break;
++		case 13: OptionMsg.m_pDescription13 = pDescription; break;
++		case 14: OptionMsg.m_pDescription14 = pDescription; break;
+ 		}
+ 
+ 		CurIndex++;
+-		pCurrent = pCurrent->m_pNext;
++		if(pCurrent)
++			pCurrent = pCurrent->m_pNext;
++	}
++	if(CurIndex == 0)
++	{
++		CNetMsg_Sv_VoteClearOptions ClearMsg;
++		Server()->SendPackMsg(&ClearMsg, MSGFLAG_VITAL, ClientId);
++		pPl->m_SendVoteIndex = 0;
++		return;
+ 	}
+ 
+ 	// send msg
+@@ -1671,12 +1749,12 @@ void CGameContext::ProgressVoteOptions(int ClientId)
+ 		Server()->SendPackMsg(&StartMsg, MSGFLAG_VITAL, ClientId);
+ 	}
+ 
+-	OptionMsg.m_NumOptions = NumVotesToSend;
++	OptionMsg.m_NumOptions = CurIndex;
+ 	Server()->SendPackMsg(&OptionMsg, MSGFLAG_VITAL, ClientId);
+ 
+-	pPl->m_SendVoteIndex += NumVotesToSend;
++	pPl->m_SendVoteIndex += CurIndex;
+ 
+-	if(pPl->m_SendVoteIndex == m_NumVoteOptions)
++	if(pPl->m_SendVoteIndex == NumOptions)
+ 	{
+ 		CNetMsg_Sv_VoteOptionGroupEnd EndMsg;
+ 		Server()->SendPackMsg(&EndMsg, MSGFLAG_VITAL, ClientId);
+@@ -2426,6 +2504,26 @@ void CGameContext::OnSayNetMessage(const CNetMsg_Cl_Say *pMsg, int ClientId, con
+ 
+ void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int ClientId)
+ {
++	const bool IsOption = str_comp_nocase(pMsg->m_pType, "option") == 0;
++	const bool MapCatalogOption = IsOption && m_MapVoteCatalog.Active();
++	const CMapVoteCatalog::SPageId CurrentPage = MapVotePage(ClientId);
++	const CMapVoteCatalog::SEntry *pMapEntry = MapCatalogOption ? m_MapVoteCatalog.Find(CurrentPage, pMsg->m_pValue) : nullptr;
++	if(MapCatalogOption && !pMapEntry)
++	{
++		SendChatTarget(ClientId, "That map option is no longer on this page");
++		return;
++	}
++	if(pMapEntry && CMapVoteCatalog::IsNavigation(pMapEntry->m_Kind))
++	{
++		CPlayer *pPlayer = m_apPlayers[ClientId];
++		const int NavigationInterval = std::max(1, Server()->TickSpeed() / 10);
++		if(pPlayer->m_LastMapVoteNavigationTick >= 0 && pPlayer->m_LastMapVoteNavigationTick + NavigationInterval > Server()->Tick())
++			return;
++		pPlayer->m_LastMapVoteNavigationTick = Server()->Tick();
++		NavigateMapVotes(ClientId, pMapEntry->m_TargetPage);
++		return;
++	}
++
+ 	if(RateLimitPlayerVote(ClientId) || m_VoteCloseTime)
+ 		return;
+ 
+@@ -2442,7 +2540,22 @@ void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int Cli
+ 		str_copy(aReason, pMsg->m_pReason);
+ 	}
+ 
+-	if(str_comp_nocase(pMsg->m_pType, "option") == 0)
++	if(pMapEntry)
++	{
++		if(!m_MapVoteCatalog.ResolveCommand(*pMapEntry, aCmd, sizeof(aCmd)) || !Console()->LineIsValid(aCmd))
++		{
++			SendChatTarget(ClientId, "Invalid map option");
++			return;
++		}
++		if(RateLimitPlayerMapVote(ClientId))
++			return;
++
++		str_format(aChatmsg, sizeof(aChatmsg), "'%s' called a vote for '%s' (%s)", Server()->ClientName(ClientId), pMapEntry->m_Description.c_str(), aReason);
++		str_copy(aDesc, pMapEntry->m_Description.c_str());
++		m_LastMapVote = time_get();
++		m_VoteType = VOTE_TYPE_OPTION;
++	}
++	else if(str_comp_nocase(pMsg->m_pType, "option") == 0)
+ 	{
+ 		CVoteOptionServer *pOption = m_pVoteOptionFirst;
+ 		while(pOption)
+@@ -2508,7 +2621,6 @@ void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int Cli
+ 				str_copy(aCmd, pMsg->m_pValue);
+ 			}
+ 		}
+-
+ 		m_VoteType = VOTE_TYPE_OPTION;
+ 	}
+ 	else if(str_comp_nocase(pMsg->m_pType, "kick") == 0)
+@@ -3104,6 +3216,9 @@ void CGameContext::OnStartInfoNetMessage(const CNetMsg_Cl_StartInfo *pMsg, int C
+ 	Server()->SendPackMsg(&ClearMsg, MSGFLAG_VITAL, ClientId);
+ 
+ 	// begin sending vote options
++	pPlayer->m_MapVotePage = static_cast<int>(CMapVoteCatalog::EPage::ROOT);
++	pPlayer->m_MapVoteType = -1;
++	pPlayer->m_LastMapVoteNavigationTick = -1;
+ 	pPlayer->m_SendVoteIndex = 0;
+ 
+ 	// send tuning parameters to client
+@@ -3537,6 +3652,11 @@ void CGameContext::ConHotReload(IConsole::IResult *pResult, void *pUserData)
+ void CGameContext::ConAddVote(IConsole::IResult *pResult, void *pUserData)
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(pSelf->m_MapVoteCatalog.Active())
++	{
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "clear the map catalog before adding legacy vote options");
++		return;
++	}
+ 	const char *pDescription = pResult->GetString(0);
+ 	const char *pCommand = pResult->GetString(1);
+ 
+@@ -3545,6 +3665,11 @@ void CGameContext::ConAddVote(IConsole::IResult *pResult, void *pUserData)
+ 
+ void CGameContext::AddVote(const char *pDescription, const char *pCommand)
+ {
++	if(m_MapVoteCatalog.Active())
++	{
++		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "clear the map catalog before adding legacy vote options");
++		return;
++	}
+ 	if(m_NumVoteOptions == MAX_VOTE_OPTIONS)
+ 	{
+ 		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "maximum number of vote options reached");
+@@ -3603,6 +3728,11 @@ void CGameContext::AddVote(const char *pDescription, const char *pCommand)
+ void CGameContext::ConRemoveVote(IConsole::IResult *pResult, void *pUserData)
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(pSelf->m_MapVoteCatalog.Active())
++	{
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "catalog entries are immutable; rebuild or clear the map catalog");
++		return;
++	}
+ 	const char *pDescription = pResult->GetString(0);
+ 
+ 	// check for valid option
+@@ -3679,6 +3809,34 @@ void CGameContext::ConForceVote(IConsole::IResult *pResult, void *pUserData)
+ 
+ 	if(str_comp_nocase(pType, "option") == 0)
+ 	{
++		if(pSelf->m_MapVoteCatalog.Active())
++		{
++			const CMapVoteCatalog::SPageId Page = pResult->m_ClientId >= 0 && pResult->m_ClientId < MAX_CLIENTS ? pSelf->MapVotePage(pResult->m_ClientId) : CMapVoteCatalog::SPageId{};
++			const CMapVoteCatalog::SEntry *pEntry = pSelf->m_MapVoteCatalog.Find(Page, pValue);
++			if(!pEntry)
++			{
++				str_format(aBuf, sizeof(aBuf), "'%s' isn't on the current map page", pValue);
++				pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
++				return;
++			}
++			if(CMapVoteCatalog::IsNavigation(pEntry->m_Kind))
++			{
++				if(pResult->m_ClientId >= 0 && pResult->m_ClientId < MAX_CLIENTS)
++					pSelf->NavigateMapVotes(pResult->m_ClientId, pEntry->m_TargetPage);
++				return;
++			}
++			char aCommand[VOTE_CMD_LENGTH];
++			if(!pSelf->m_MapVoteCatalog.ResolveCommand(*pEntry, aCommand, sizeof(aCommand)) || !pSelf->Console()->LineIsValid(aCommand))
++			{
++				pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "invalid map catalog command");
++				return;
++			}
++			str_format(aBuf, sizeof(aBuf), "authorized player forced map option '%s' (%s)", pEntry->m_Description.c_str(), pReason);
++			pSelf->SendChatTarget(-1, aBuf, FLAG_SIX);
++			pSelf->m_VoteCreator = pResult->m_ClientId;
++			pSelf->Console()->ExecuteLine(aCommand, IConsole::CLIENT_ID_UNSPECIFIED);
++			return;
++		}
+ 		CVoteOptionServer *pOption = pSelf->m_pVoteOptionFirst;
+ 		while(pOption)
+ 		{
+@@ -3747,15 +3905,28 @@ void CGameContext::ConClearVotes(IConsole::IResult *pResult, void *pUserData)
+ 	pSelf->m_pVoteOptionFirst = nullptr;
+ 	pSelf->m_pVoteOptionLast = nullptr;
+ 	pSelf->m_NumVoteOptions = 0;
++	pSelf->m_MapVoteCatalog.Clear();
+ 
+ 	// reset sending of vote options
+ 	for(auto &pPlayer : pSelf->m_apPlayers)
+ 	{
+ 		if(pPlayer)
++		{
+ 			pPlayer->m_SendVoteIndex = 0;
++			pPlayer->m_MapVotePage = static_cast<int>(CMapVoteCatalog::EPage::ROOT);
++			pPlayer->m_MapVoteType = -1;
++			pPlayer->m_LastMapVoteNavigationTick = -1;
++		}
+ 	}
+ }
+ 
++void CGameContext::ConAddMapCatalogVotes(IConsole::IResult *pResult, void *pUserData)
++{
++	(void)pResult;
++	auto *pSelf = static_cast<CGameContext *>(pUserData);
++	pSelf->PublishMapVoteCatalog();
++}
++
+ struct CMapNameItem
+ {
+ 	char m_aName[IO_MAX_PATH_LENGTH - 4];
+@@ -3776,6 +3947,11 @@ struct CMapNameItem
+ void CGameContext::ConAddMapVotes(IConsole::IResult *pResult, void *pUserData)
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(pSelf->m_MapVoteCatalog.Active())
++	{
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "clear the map catalog before adding legacy map votes");
++		return;
++	}
+ 
+ 	std::vector<CMapNameItem> vMapList;
+ 	const char *pDirectory = pResult->GetString(0);
+@@ -3856,6 +4032,13 @@ void CGameContext::ConVote(IConsole::IResult *pResult, void *pUserData)
+ void CGameContext::ConVotes(IConsole::IResult *pResult, void *pUserData)
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
++	if(pSelf->m_MapVoteCatalog.Active())
++	{
++		char aCatalogMessage[128];
++		str_format(aCatalogMessage, sizeof(aCatalogMessage), "%d maps in the active browsable catalog", pSelf->m_MapVoteCatalog.MapCount());
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "votes", aCatalogMessage);
++		return;
++	}
+ 
+ 	int Page = pResult->NumArguments() > 0 ? pResult->GetInteger(0) : 0;
+ 	static const int s_EntriesPerPage = 20;
+@@ -3977,6 +4160,7 @@ void CGameContext::OnConsoleInit()
+ 	Console()->Register("force_vote", "s[name] s[command] ?r[reason]", CFGFLAG_SERVER, ConForceVote, this, "Force a voting option");
+ 	Console()->Register("clear_votes", "", CFGFLAG_SERVER, ConClearVotes, this, "Clears the voting options");
+ 	Console()->Register("add_map_votes", "?s[directory]", CFGFLAG_SERVER, ConAddMapVotes, this, "Automatically adds voting options for all maps");
++	Console()->Register("add_map_catalog_votes", "", CFGFLAG_SERVER, ConAddMapCatalogVotes, this, "Build browsable DDRace, Gores and other map vote pages");
+ 	Console()->Register("vote", "r['yes'|'no']", CFGFLAG_SERVER, ConVote, this, "Force a vote to yes/no");
+ 	Console()->Register("votes", "?i[page]", CFGFLAG_SERVER, ConVotes, this, "Show all votes (page 0 by default, 20 entries per page)");
+ 	Console()->Register("dump_antibot", "", CFGFLAG_SERVER | CFGFLAG_STORE, ConDumpAntibot, this, "Dumps the antibot status");
+@@ -4272,6 +4456,8 @@ void CGameContext::OnInit(const void *pPersistentData)
+ 	LoadMapSettings();
+ 
+ 	m_pConfigManager->SetGameSettingsReadOnly(true);
++	if(g_Config.m_SvMapVoteCatalog)
++		PublishMapVoteCatalog();
+ 
+ 	m_MapBugs.Dump();
+ 
+diff --git a/src/game/server/gamecontext.h b/src/game/server/gamecontext.h
+index bc1ec17..fe70de8 100644
+--- a/src/game/server/gamecontext.h
++++ b/src/game/server/gamecontext.h
+@@ -5,6 +5,7 @@
+ 
+ #include "eventhandler.h"
+ #include "gameworld.h"
++#include "map_vote_catalog.h"
+ #include "teehistorian.h"
+ 
+ #include <base/types.h>
+@@ -167,6 +168,7 @@ class CGameContext : public IGameServer
+ 	static void ConForceVote(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConClearVotes(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConAddMapVotes(IConsole::IResult *pResult, void *pUserData);
++	static void ConAddMapCatalogVotes(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConVote(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConVotes(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConVoteNo(IConsole::IResult *pResult, void *pUserData);
+@@ -284,6 +286,7 @@ public:
+ 	CHeap *m_pVoteOptionHeap;
+ 	CVoteOptionServer *m_pVoteOptionFirst;
+ 	CVoteOptionServer *m_pVoteOptionLast;
++	CMapVoteCatalog m_MapVoteCatalog;
+ 
+ 	// helper functions
+ 	void CreateDamageInd(vec2 Pos, float AngleMod, int Amount, CClientMask Mask = CClientMask().set());
+@@ -329,6 +332,9 @@ public:
+ 
+ 	const CVoteOptionServer *GetVoteOption(int Index) const;
+ 	void ProgressVoteOptions(int ClientId);
++	CMapVoteCatalog::SPageId MapVotePage(int ClientId) const;
++	void NavigateMapVotes(int ClientId, CMapVoteCatalog::SPageId Page);
++	bool PublishMapVoteCatalog();
+ 
+ 	//
+ 	void LoadMapSettings();
+diff --git a/src/game/server/map_vote_catalog.cpp b/src/game/server/map_vote_catalog.cpp
+new file mode 100644
+index 0000000..34efe84
+--- /dev/null
++++ b/src/game/server/map_vote_catalog.cpp
+@@ -0,0 +1,453 @@
++#include "map_vote_catalog.h"
++
++#include <base/secure.h>
++#include <base/str.h>
++#include <base/types.h>
++
++#include <engine/console.h>
++#include <engine/shared/protocol.h>
++#include <engine/storage.h>
++
++#include <game/voting.h>
++
++#include <algorithm>
++#include <cctype>
++#include <utility>
++#include <vector>
++
++namespace
++{
++	struct SScanContext
++	{
++		bool m_WantDirectories = false;
++		std::vector<std::string> m_vNames{};
++	};
++
++	int ScanDirectoryEntry(const char *pName, int IsDir, int DirType, void *pUser)
++	{
++		(void)DirType;
++		auto *pContext = static_cast<SScanContext *>(pUser);
++		if(!pName || !str_comp(pName, ".") || !str_comp(pName, "..") || (IsDir != 0) != pContext->m_WantDirectories)
++			return 0;
++		if(!pContext->m_WantDirectories && !str_endswith_nocase(pName, ".map"))
++			return 0;
++
++		std::string Name = pName;
++		if(!pContext->m_WantDirectories)
++			Name.resize(Name.size() - 4);
++		if(Name.empty() || !str_valid_filename(Name.c_str()))
++			return 0;
++		pContext->m_vNames.push_back(std::move(Name));
++		return 0;
++	}
++
++	std::vector<std::string> ScanNames(IStorage *pStorage, int StorageType, const char *pDirectory, bool Directories)
++	{
++		SScanContext Context;
++		Context.m_WantDirectories = Directories;
++		pStorage->ListDirectory(StorageType, pDirectory, ScanDirectoryEntry, &Context);
++		std::sort(Context.m_vNames.begin(), Context.m_vNames.end(), [](const std::string &Left, const std::string &Right) {
++			return str_comp_filenames(Left.c_str(), Right.c_str()) < 0;
++		});
++		Context.m_vNames.erase(std::unique(Context.m_vNames.begin(), Context.m_vNames.end(), [](const std::string &Left, const std::string &Right) {
++			return str_comp_nocase(Left.c_str(), Right.c_str()) == 0;
++		}),
++			Context.m_vNames.end());
++		return Context.m_vNames;
++	}
++
++	std::string PrettyTypeName(const std::string &Name)
++	{
++		std::string Pretty;
++		Pretty.reserve(Name.size() + 4);
++		bool NewWord = true;
++		for(char Ch : Name)
++		{
++			if(Ch == '.' || Ch == '_' || Ch == '-')
++			{
++				Pretty.push_back(' ');
++				NewWord = true;
++				continue;
++			}
++			const unsigned char UCh = static_cast<unsigned char>(Ch);
++			Pretty.push_back(NewWord ? static_cast<char>(std::toupper(UCh)) : static_cast<char>(std::tolower(UCh)));
++			NewWord = false;
++		}
++		if(str_startswith_nocase(Name.c_str(), "ddmax."))
++			Pretty.replace(0, 5, "DDMax");
++		return Pretty;
++	}
++
++	std::string MapCommand(const std::string &Path)
++	{
++		char aEscaped[IO_MAX_PATH_LENGTH * 2];
++		char *pDst = aEscaped;
++		str_escape(&pDst, Path.c_str(), aEscaped + sizeof(aEscaped));
++		std::string Command = "change_map \"";
++		Command += aEscaped;
++		Command += '"';
++		return Command.size() < VOTE_CMD_LENGTH ? Command : std::string{};
++	}
++
++	void SetError(std::string *pError, const char *pMessage)
++	{
++		if(pError)
++			*pError = pMessage;
++	}
++} // namespace
++
++void CMapVoteCatalog::Clear()
++{
++	m_Active = false;
++	m_vDdraceTypes.clear();
++	m_vGoresTypes.clear();
++	m_vOtherMaps.clear();
++	m_vRootPage.clear();
++	m_vDdracePage.clear();
++	m_vGoresPage.clear();
++	m_vOthersPage.clear();
++}
++
++void CMapVoteCatalog::DisambiguateTypeDisplayNames(std::vector<SType> &vTypes)
++{
++	std::vector<bool> vDuplicate(vTypes.size(), false);
++	for(size_t Index = 0; Index < vTypes.size(); ++Index)
++	{
++		for(size_t Other = 0; Other < vTypes.size(); ++Other)
++		{
++			if(Index != Other && str_comp_nocase(vTypes[Index].m_DisplayName.c_str(), vTypes[Other].m_DisplayName.c_str()) == 0)
++			{
++				vDuplicate[Index] = true;
++				break;
++			}
++		}
++	}
++	for(size_t Index = 0; Index < vTypes.size(); ++Index)
++	{
++		if(vDuplicate[Index])
++		{
++			vTypes[Index].m_DisplayName += " [";
++			vTypes[Index].m_DisplayName += vTypes[Index].m_Name;
++			vTypes[Index].m_DisplayName += ']';
++		}
++	}
++}
++
++bool CMapVoteCatalog::Build(IStorage *pStorage, IConsole *pConsole, std::string *pError)
++{
++	return BuildFromStorageType(pStorage, IStorage::TYPE_ALL, pConsole, pError);
++}
++
++bool CMapVoteCatalog::BuildFromStorageType(IStorage *pStorage, int StorageType, IConsole *pConsole, std::string *pError)
++{
++	if(pError)
++		pError->clear();
++	if(!pStorage)
++	{
++		SetError(pError, "storage is unavailable");
++		return false;
++	}
++
++	CMapVoteCatalog Candidate;
++	bool PathTruncated = false;
++	auto ScanTypes = [&](const char *pTypesRoot, bool Ddrace, std::vector<SType> *pOutTypes) {
++		for(const std::string &TypeName : ScanNames(pStorage, StorageType, pTypesRoot, true))
++		{
++			char aMapDirectory[IO_MAX_PATH_LENGTH];
++			if(str_format(aMapDirectory, sizeof(aMapDirectory), "%s/%s%s", pTypesRoot, TypeName.c_str(), Ddrace ? "/maps" : "") >= static_cast<int>(sizeof(aMapDirectory)))
++			{
++				PathTruncated = true;
++				return;
++			}
++			const std::vector<std::string> vMapNames = ScanNames(pStorage, StorageType, aMapDirectory, false);
++			if(vMapNames.empty())
++				continue;
++
++			SType Type;
++			Type.m_Name = TypeName;
++			// Both map corpora use machine-oriented directory names. Publish
++			// consistent reader-facing labels instead of leaking their casing
++			// and separator conventions into the vote menu.
++			Type.m_DisplayName = PrettyTypeName(TypeName);
++			Type.m_vMaps.reserve(vMapNames.size());
++			for(const std::string &MapName : vMapNames)
++			{
++				char aPath[IO_MAX_PATH_LENGTH];
++				if(str_format(aPath, sizeof(aPath), "%s/%s", aMapDirectory + str_length("maps/"), MapName.c_str()) >= static_cast<int>(sizeof(aPath)))
++				{
++					PathTruncated = true;
++					return;
++				}
++				Type.m_vMaps.push_back({MapName, aPath});
++			}
++			pOutTypes->push_back(std::move(Type));
++		}
++	};
++
++	ScanTypes("maps/tw_maps/ddnet-maps-master/types", true, &Candidate.m_vDdraceTypes);
++	ScanTypes("maps/tw_maps/KoGmaps-main", false, &Candidate.m_vGoresTypes);
++	DisambiguateTypeDisplayNames(Candidate.m_vDdraceTypes);
++	DisambiguateTypeDisplayNames(Candidate.m_vGoresTypes);
++	if(PathTruncated)
++	{
++		SetError(pError, "a map catalog path exceeds the supported length");
++		return false;
++	}
++	for(const std::string &MapName : ScanNames(pStorage, StorageType, "maps", false))
++		Candidate.m_vOtherMaps.push_back({MapName, MapName});
++
++	if(Candidate.m_vDdraceTypes.empty() || Candidate.m_vGoresTypes.empty())
++	{
++		SetError(pError, "DDRace or Gores map roots are missing or empty");
++		return false;
++	}
++	if(Candidate.MapCount() > MAX_VOTE_OPTIONS)
++	{
++		SetError(pError, "map catalog exceeds the vote option safety limit");
++		return false;
++	}
++
++	if(!Candidate.BuildPages(pError))
++		return false;
++	Candidate.m_Active = true;
++	*this = std::move(Candidate);
++
++	if(pConsole)
++	{
++		char aMessage[160];
++		str_format(aMessage, sizeof(aMessage), "published %d maps in %d DDRace and %d Gores types", MapCount(), static_cast<int>(m_vDdraceTypes.size()), static_cast<int>(m_vGoresTypes.size()));
++		pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "map-votes", aMessage);
++	}
++	return true;
++}
++
++bool CMapVoteCatalog::BuildPages(std::string *pError)
++{
++	auto Navigation = [](const char *pLabel, SPageId Target) {
++		SEntry Entry;
++		Entry.m_Kind = EOptionKind::FOLDER;
++		Entry.m_Description = pLabel;
++		Entry.m_TargetPage = Target;
++		return Entry;
++	};
++	auto Back = [](const char *pLabel, SPageId Target) {
++		SEntry Entry;
++		Entry.m_Kind = EOptionKind::BACK;
++		Entry.m_Description = pLabel;
++		Entry.m_TargetPage = Target;
++		return Entry;
++	};
++	auto Random = [](const char *pLabel, ECategory Category, int Type) {
++		SEntry Entry;
++		Entry.m_Kind = EOptionKind::RANDOM;
++		Entry.m_Description = pLabel;
++		Entry.m_RandomCategory = static_cast<int>(Category);
++		Entry.m_RandomType = Type;
++		return Entry;
++	};
++	auto Map = [](const SMap &MapValue) {
++		SEntry Entry;
++		Entry.m_Kind = EOptionKind::MAP;
++		Entry.m_Description = MapValue.m_Name;
++		Entry.m_Command = MapCommand(MapValue.m_Path);
++		return Entry;
++	};
++
++	m_vRootPage = {
++		Navigation("Browse DDRace maps  ›", {EPage::DDRACE_TYPES, -1}),
++		Navigation("Browse Gores maps  ›", {EPage::GORES_TYPES, -1}),
++		Navigation("Browse other maps  ›", {EPage::OTHERS, -1}),
++		Random("★ Random DDRace map", ECategory::DDRACE, -1),
++		Random("★ Random Gores map", ECategory::GORES, -1),
++	};
++
++	m_vDdracePage.push_back(Back("‹  Back to map categories", {EPage::ROOT, -1}));
++	for(int TypeIndex = 0; TypeIndex < static_cast<int>(m_vDdraceTypes.size()); ++TypeIndex)
++	{
++		char aLabel[VOTE_DESC_LENGTH];
++		str_format(aLabel, sizeof(aLabel), "Browse %s maps  ›", m_vDdraceTypes[TypeIndex].m_DisplayName.c_str());
++		m_vDdracePage.push_back(Navigation(aLabel, {EPage::DDRACE_TYPE, TypeIndex}));
++	}
++	m_vGoresPage.push_back(Back("‹  Back to map categories", {EPage::ROOT, -1}));
++	for(int TypeIndex = 0; TypeIndex < static_cast<int>(m_vGoresTypes.size()); ++TypeIndex)
++	{
++		char aLabel[VOTE_DESC_LENGTH];
++		str_format(aLabel, sizeof(aLabel), "Browse %s maps  ›", m_vGoresTypes[TypeIndex].m_DisplayName.c_str());
++		m_vGoresPage.push_back(Navigation(aLabel, {EPage::GORES_TYPE, TypeIndex}));
++	}
++
++	for(int TypeIndex = 0; TypeIndex < static_cast<int>(m_vDdraceTypes.size()); ++TypeIndex)
++	{
++		SType &Type = m_vDdraceTypes[TypeIndex];
++		char aRandomLabel[VOTE_DESC_LENGTH];
++		str_format(aRandomLabel, sizeof(aRandomLabel), "★ Random %s map", Type.m_DisplayName.c_str());
++		Type.m_vPage.push_back(Back("‹  Back to DDRace difficulties", {EPage::DDRACE_TYPES, -1}));
++		Type.m_vPage.push_back(Random(aRandomLabel, ECategory::DDRACE, TypeIndex));
++		for(const SMap &MapValue : Type.m_vMaps)
++			Type.m_vPage.push_back(Map(MapValue));
++	}
++	for(int TypeIndex = 0; TypeIndex < static_cast<int>(m_vGoresTypes.size()); ++TypeIndex)
++	{
++		SType &Type = m_vGoresTypes[TypeIndex];
++		char aRandomLabel[VOTE_DESC_LENGTH];
++		str_format(aRandomLabel, sizeof(aRandomLabel), "★ Random %s map", Type.m_DisplayName.c_str());
++		Type.m_vPage.push_back(Back("‹  Back to Gores difficulties", {EPage::GORES_TYPES, -1}));
++		Type.m_vPage.push_back(Random(aRandomLabel, ECategory::GORES, TypeIndex));
++		for(const SMap &MapValue : Type.m_vMaps)
++			Type.m_vPage.push_back(Map(MapValue));
++	}
++
++	m_vOthersPage.push_back(Back("‹  Back to map categories", {EPage::ROOT, -1}));
++	for(const SMap &MapValue : m_vOtherMaps)
++		m_vOthersPage.push_back(Map(MapValue));
++
++	auto ValidatePage = [&](const std::vector<SEntry> &vPage) {
++		std::vector<const char *> vpDescriptions;
++		vpDescriptions.reserve(vPage.size());
++		if(vPage.size() > MAX_VOTE_OPTIONS)
++			return false;
++		for(const SEntry &Entry : vPage)
++		{
++			if(Entry.m_Description.empty() || Entry.m_Description.size() >= VOTE_DESC_LENGTH ||
++				(Entry.m_Kind == EOptionKind::MAP && Entry.m_Command.empty()))
++				return false;
++			vpDescriptions.push_back(Entry.m_Description.c_str());
++		}
++		std::sort(vpDescriptions.begin(), vpDescriptions.end(), [](const char *pLeft, const char *pRight) {
++			return str_comp_nocase(pLeft, pRight) < 0;
++		});
++		for(size_t Index = 1; Index < vpDescriptions.size(); ++Index)
++			if(str_comp_nocase(vpDescriptions[Index - 1], vpDescriptions[Index]) == 0)
++				return false;
++		return true;
++	};
++	if(!ValidatePage(m_vRootPage) || !ValidatePage(m_vDdracePage) || !ValidatePage(m_vGoresPage) || !ValidatePage(m_vOthersPage))
++	{
++		SetError(pError, "a map vote page exceeds protocol limits");
++		return false;
++	}
++	for(const SType &Type : m_vDdraceTypes)
++		if(!ValidatePage(Type.m_vPage))
++		{
++			SetError(pError, "a DDRace map vote page exceeds protocol limits");
++			return false;
++		}
++	for(const SType &Type : m_vGoresTypes)
++		if(!ValidatePage(Type.m_vPage))
++		{
++			SetError(pError, "a Gores map vote page exceeds protocol limits");
++			return false;
++		}
++	return true;
++}
++
++const std::vector<CMapVoteCatalog::SType> &CMapVoteCatalog::Types(ECategory Category) const
++{
++	return Category == ECategory::DDRACE ? m_vDdraceTypes : m_vGoresTypes;
++}
++
++const std::vector<CMapVoteCatalog::SEntry> *CMapVoteCatalog::PageEntries(SPageId Page) const
++{
++	switch(Page.m_Page)
++	{
++	case EPage::ROOT: return &m_vRootPage;
++	case EPage::DDRACE_TYPES: return &m_vDdracePage;
++	case EPage::GORES_TYPES: return &m_vGoresPage;
++	case EPage::OTHERS: return &m_vOthersPage;
++	case EPage::DDRACE_TYPE:
++		return Page.m_Type >= 0 && Page.m_Type < static_cast<int>(m_vDdraceTypes.size()) ? &m_vDdraceTypes[Page.m_Type].m_vPage : nullptr;
++	case EPage::GORES_TYPE:
++		return Page.m_Type >= 0 && Page.m_Type < static_cast<int>(m_vGoresTypes.size()) ? &m_vGoresTypes[Page.m_Type].m_vPage : nullptr;
++	}
++	return nullptr;
++}
++
++int CMapVoteCatalog::OptionCount(SPageId Page) const
++{
++	const std::vector<SEntry> *pEntries = PageEntries(Page);
++	return pEntries ? static_cast<int>(pEntries->size()) : 0;
++}
++
++const CMapVoteCatalog::SEntry *CMapVoteCatalog::OptionAt(SPageId Page, int Index) const
++{
++	const std::vector<SEntry> *pEntries = PageEntries(Page);
++	return pEntries && Index >= 0 && Index < static_cast<int>(pEntries->size()) ? &(*pEntries)[Index] : nullptr;
++}
++
++const CMapVoteCatalog::SEntry *CMapVoteCatalog::Find(SPageId Page, const char *pDescription) const
++{
++	const std::vector<SEntry> *pEntries = PageEntries(Page);
++	if(!pEntries || !pDescription)
++		return nullptr;
++	for(const SEntry &Entry : *pEntries)
++		if(str_comp_nocase(Entry.m_Description.c_str(), pDescription) == 0)
++			return &Entry;
++	return nullptr;
++}
++
++bool CMapVoteCatalog::ResolveCommand(const SEntry &Entry, char *pCommand, int CommandSize) const
++{
++	if(!pCommand || CommandSize <= 0)
++		return false;
++	pCommand[0] = '\0';
++	if(Entry.m_Kind == EOptionKind::MAP)
++	{
++		if(Entry.m_Command.empty() || Entry.m_Command.size() >= static_cast<size_t>(CommandSize))
++			return false;
++		str_copy(pCommand, Entry.m_Command.c_str(), CommandSize);
++		return true;
++	}
++	if(Entry.m_Kind != EOptionKind::RANDOM || Entry.m_RandomCategory < 0 || Entry.m_RandomCategory > 1)
++		return false;
++
++	const ECategory Category = static_cast<ECategory>(Entry.m_RandomCategory);
++	const std::vector<SType> &vTypes = Types(Category);
++	int Total = 0;
++	if(Entry.m_RandomType >= 0)
++	{
++		if(Entry.m_RandomType >= static_cast<int>(vTypes.size()))
++			return false;
++		Total = static_cast<int>(vTypes[Entry.m_RandomType].m_vMaps.size());
++	}
++	else
++	{
++		for(const SType &Type : vTypes)
++			Total += static_cast<int>(Type.m_vMaps.size());
++	}
++	if(Total <= 0)
++		return false;
++
++	int Chosen = secure_rand_below(Total);
++	const SMap *pChosenMap = nullptr;
++	if(Entry.m_RandomType >= 0)
++		pChosenMap = &vTypes[Entry.m_RandomType].m_vMaps[Chosen];
++	else
++	{
++		for(const SType &Type : vTypes)
++		{
++			if(Chosen < static_cast<int>(Type.m_vMaps.size()))
++			{
++				pChosenMap = &Type.m_vMaps[Chosen];
++				break;
++			}
++			Chosen -= static_cast<int>(Type.m_vMaps.size());
++		}
++	}
++	if(!pChosenMap)
++		return false;
++	const std::string Command = MapCommand(pChosenMap->m_Path);
++	if(Command.empty() || Command.size() >= static_cast<size_t>(CommandSize))
++		return false;
++	str_copy(pCommand, Command.c_str(), CommandSize);
++	return true;
++}
++
++int CMapVoteCatalog::MapCount() const
++{
++	int Count = static_cast<int>(m_vOtherMaps.size());
++	for(const SType &Type : m_vDdraceTypes)
++		Count += static_cast<int>(Type.m_vMaps.size());
++	for(const SType &Type : m_vGoresTypes)
++		Count += static_cast<int>(Type.m_vMaps.size());
++	return Count;
++}
+diff --git a/src/game/server/map_vote_catalog.h b/src/game/server/map_vote_catalog.h
+new file mode 100644
+index 0000000..84e7ba8
+--- /dev/null
++++ b/src/game/server/map_vote_catalog.h
+@@ -0,0 +1,97 @@
++#ifndef GAME_SERVER_MAP_VOTE_CATALOG_H
++#define GAME_SERVER_MAP_VOTE_CATALOG_H
++
++#include <string>
++#include <vector>
++
++class IConsole;
++class IStorage;
++
++class CMapVoteCatalog
++{
++public:
++	enum class EOptionKind
++	{
++		NORMAL = 0,
++		FOLDER,
++		BACK,
++		RANDOM,
++		MAP,
++	};
++
++	enum class EPage : int
++	{
++		ROOT = 0,
++		DDRACE_TYPES,
++		GORES_TYPES,
++		OTHERS,
++		DDRACE_TYPE,
++		GORES_TYPE,
++	};
++
++	struct SPageId
++	{
++		EPage m_Page = EPage::ROOT;
++		int m_Type = -1;
++
++		bool operator==(const SPageId &Other) const { return m_Page == Other.m_Page && m_Type == Other.m_Type; }
++	};
++
++	struct SEntry
++	{
++		EOptionKind m_Kind = EOptionKind::NORMAL;
++		std::string m_Description{};
++		std::string m_Command{};
++		SPageId m_TargetPage{};
++		int m_RandomCategory = -1;
++		int m_RandomType = -1;
++	};
++
++	bool Build(IStorage *pStorage, IConsole *pConsole, std::string *pError = nullptr);
++	bool BuildFromStorageType(IStorage *pStorage, int StorageType, IConsole *pConsole, std::string *pError = nullptr);
++	void Clear();
++	bool Active() const { return m_Active; }
++	static bool IsNavigation(EOptionKind Kind) { return Kind == EOptionKind::FOLDER || Kind == EOptionKind::BACK; }
++	int OptionCount(SPageId Page) const;
++	const SEntry *OptionAt(SPageId Page, int Index) const;
++	const SEntry *Find(SPageId Page, const char *pDescription) const;
++	bool ResolveCommand(const SEntry &Entry, char *pCommand, int CommandSize) const;
++	int MapCount() const;
++
++private:
++	enum class ECategory : int
++	{
++		DDRACE = 0,
++		GORES,
++	};
++
++	struct SMap
++	{
++		std::string m_Name{};
++		std::string m_Path{};
++	};
++
++	struct SType
++	{
++		std::string m_Name{};
++		std::string m_DisplayName{};
++		std::vector<SMap> m_vMaps{};
++		std::vector<SEntry> m_vPage{};
++	};
++
++	bool m_Active = false;
++	std::vector<SType> m_vDdraceTypes{};
++	std::vector<SType> m_vGoresTypes{};
++	std::vector<SMap> m_vOtherMaps{};
++	std::vector<SEntry> m_vRootPage{};
++	std::vector<SEntry> m_vDdracePage{};
++	std::vector<SEntry> m_vGoresPage{};
++	std::vector<SEntry> m_vOthersPage{};
++
++	const std::vector<SEntry> *PageEntries(SPageId Page) const;
++	const std::vector<SType> &Types(ECategory Category) const;
++	static void DisambiguateTypeDisplayNames(std::vector<SType> &vTypes);
++	bool BuildPages(std::string *pError);
++};
++
++#endif // GAME_SERVER_MAP_VOTE_CATALOG_H
+diff --git a/src/game/server/player.cpp b/src/game/server/player.cpp
+index 94e492d..6639a67 100644
+--- a/src/game/server/player.cpp
++++ b/src/game/server/player.cpp
+@@ -90,6 +90,9 @@ void CPlayer::Reset()
+ 	m_FirstPacket = true;
+ 
+ 	m_SendVoteIndex = -1;
++	m_MapVotePage = 0;
++	m_MapVoteType = -1;
++	m_LastMapVoteNavigationTick = -1;
+ 
+ 	if(g_Config.m_Events)
+ 	{
+diff --git a/src/game/server/player.h b/src/game/server/player.h
+index 76fc425..9fe84e9 100644
+--- a/src/game/server/player.h
++++ b/src/game/server/player.h
+@@ -101,6 +101,9 @@ public:
+ 	int m_LastInvited;
+ 
+ 	int m_SendVoteIndex;
++	int m_MapVotePage;
++	int m_MapVoteType;
++	int m_LastMapVoteNavigationTick;
+ 
+ 	CTeeInfo m_TeeInfos;
+ 
+diff --git a/src/test/map_vote_catalog_test.cpp b/src/test/map_vote_catalog_test.cpp
+new file mode 100644
+index 0000000..fb61050
+--- /dev/null
++++ b/src/test/map_vote_catalog_test.cpp
+@@ -0,0 +1,282 @@
++#include "test.h"
++
++#include <base/io.h>
++
++#include <engine/shared/protocol.h>
++#include <engine/storage.h>
++
++#include <game/server/map_vote_catalog.h>
++#include <game/voting.h>
++
++#include <gtest/gtest.h>
++
++#include <array>
++#include <initializer_list>
++#include <memory>
++#include <string>
++#include <vector>
++
++namespace
++{
++	using EOptionKind = CMapVoteCatalog::EOptionKind;
++	using EPage = CMapVoteCatalog::EPage;
++	using SPageId = CMapVoteCatalog::SPageId;
++
++	constexpr std::array<const char *, 8> TEST_DIRECTORIES = {
++		"maps",
++		"maps/tw_maps",
++		"maps/tw_maps/ddnet-maps-master",
++		"maps/tw_maps/ddnet-maps-master/types",
++		"maps/tw_maps/ddnet-maps-master/types/novice",
++		"maps/tw_maps/ddnet-maps-master/types/novice/maps",
++		"maps/tw_maps/KoGmaps-main",
++		"maps/tw_maps/KoGmaps-main/HARD",
++	};
++
++	constexpr const char *DDRACE_MAP = "maps/tw_maps/ddnet-maps-master/types/novice/maps/Alpha.map";
++	constexpr const char *GORES_MAP = "maps/tw_maps/KoGmaps-main/HARD/Omega.map";
++	constexpr const char *OTHER_MAP = "maps/dm_1.map";
++
++	constexpr std::array<const char *, 3> TEST_MAPS = {
++		DDRACE_MAP,
++		GORES_MAP,
++		OTHER_MAP,
++	};
++
++	struct SExpectedOption
++	{
++		EOptionKind m_Kind;
++		const char *m_pDescription;
++	};
++
++	void ExpectPage(const CMapVoteCatalog &Catalog, SPageId Page, std::initializer_list<SExpectedOption> Expected)
++	{
++		ASSERT_EQ(Catalog.OptionCount(Page), static_cast<int>(Expected.size()));
++		int Index = 0;
++		for(const SExpectedOption &Option : Expected)
++		{
++			const CMapVoteCatalog::SEntry *pEntry = Catalog.OptionAt(Page, Index++);
++			ASSERT_NE(pEntry, nullptr);
++			EXPECT_EQ(pEntry->m_Kind, Option.m_Kind);
++			EXPECT_STREQ(pEntry->m_Description.c_str(), Option.m_pDescription);
++			EXPECT_LT(pEntry->m_Description.size(), static_cast<size_t>(VOTE_DESC_LENGTH));
++			EXPECT_EQ(pEntry->m_Description.find("@TAS"), std::string::npos);
++			EXPECT_EQ(pEntry->m_Description.find('|'), std::string::npos);
++		}
++	}
++
++	void ExpectResolvedCommand(const CMapVoteCatalog &Catalog, const CMapVoteCatalog::SEntry *pEntry, const char *pExpected)
++	{
++		ASSERT_NE(pEntry, nullptr);
++		char aCommand[VOTE_CMD_LENGTH];
++		ASSERT_TRUE(Catalog.ResolveCommand(*pEntry, aCommand, sizeof(aCommand)));
++		EXPECT_STREQ(aCommand, pExpected);
++	}
++
++	class CMapVoteCatalogTest : public ::testing::Test
++	{
++	protected:
++		CTestInfo m_TestInfo;
++		std::unique_ptr<IStorage> m_pStorage;
++		CMapVoteCatalog m_Catalog;
++		std::vector<std::string> m_vCreatedDirectories;
++		std::vector<std::string> m_vCreatedMaps;
++
++		static bool CreateEmptyFile(IStorage *pStorage, const char *pPath)
++		{
++			IOHANDLE File = pStorage->OpenFile(pPath, IOFLAG_WRITE, IStorage::TYPE_SAVE);
++			return File && io_close(File) == 0;
++		}
++
++		bool CreateDirectory(const char *pPath)
++		{
++			if(!m_pStorage->CreateFolder(pPath, IStorage::TYPE_SAVE))
++				return false;
++			m_vCreatedDirectories.emplace_back(pPath);
++			return true;
++		}
++
++		bool CreateMap(const char *pPath)
++		{
++			if(!CreateEmptyFile(m_pStorage.get(), pPath))
++				return false;
++			m_vCreatedMaps.emplace_back(pPath);
++			return true;
++		}
++
++		void SetUp() override
++		{
++			m_TestInfo.m_DeleteTestStorageFilesOnSuccess = true;
++			m_pStorage = m_TestInfo.CreateTestStorage();
++			ASSERT_NE(m_pStorage, nullptr);
++
++			for(const char *pDirectory : TEST_DIRECTORIES)
++				ASSERT_TRUE(CreateDirectory(pDirectory)) << pDirectory;
++			for(const char *pMap : TEST_MAPS)
++				ASSERT_TRUE(CreateMap(pMap)) << pMap;
++		}
++
++		void TearDown() override
++		{
++			if(!m_pStorage)
++				return;
++			for(auto It = m_vCreatedMaps.rbegin(); It != m_vCreatedMaps.rend(); ++It)
++			{
++				if(m_pStorage->FileExists(It->c_str(), IStorage::TYPE_SAVE))
++				{
++					EXPECT_TRUE(m_pStorage->RemoveFile(It->c_str(), IStorage::TYPE_SAVE)) << *It;
++				}
++			}
++			for(auto It = m_vCreatedDirectories.rbegin(); It != m_vCreatedDirectories.rend(); ++It)
++			{
++				if(m_pStorage->FolderExists(It->c_str(), IStorage::TYPE_SAVE))
++				{
++					EXPECT_TRUE(m_pStorage->RemoveFolder(It->c_str(), IStorage::TYPE_SAVE)) << *It;
++				}
++			}
++			m_pStorage.reset();
++		}
++	};
++} // namespace
++
++TEST(MapVoteCatalog, NavigationKindsAreExplicitServerState)
++{
++	EXPECT_TRUE(CMapVoteCatalog::IsNavigation(EOptionKind::FOLDER));
++	EXPECT_TRUE(CMapVoteCatalog::IsNavigation(EOptionKind::BACK));
++	EXPECT_FALSE(CMapVoteCatalog::IsNavigation(EOptionKind::NORMAL));
++	EXPECT_FALSE(CMapVoteCatalog::IsNavigation(EOptionKind::RANDOM));
++	EXPECT_FALSE(CMapVoteCatalog::IsNavigation(EOptionKind::MAP));
++}
++
++TEST_F(CMapVoteCatalogTest, PublishesReadablePagesAndResolvesCommands)
++{
++	std::string Error = "stale error";
++	ASSERT_TRUE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Error)) << Error;
++	EXPECT_TRUE(Error.empty());
++	ASSERT_TRUE(m_Catalog.Active());
++	EXPECT_EQ(m_Catalog.MapCount(), 3);
++
++	const SPageId Root{EPage::ROOT, -1};
++	const SPageId DdraceTypes{EPage::DDRACE_TYPES, -1};
++	const SPageId GoresTypes{EPage::GORES_TYPES, -1};
++	const SPageId Others{EPage::OTHERS, -1};
++	const SPageId DdraceNovice{EPage::DDRACE_TYPE, 0};
++	const SPageId GoresHard{EPage::GORES_TYPE, 0};
++
++	ExpectPage(m_Catalog, Root, {
++					    {EOptionKind::FOLDER, "Browse DDRace maps  ›"},
++					    {EOptionKind::FOLDER, "Browse Gores maps  ›"},
++					    {EOptionKind::FOLDER, "Browse other maps  ›"},
++					    {EOptionKind::RANDOM, "★ Random DDRace map"},
++					    {EOptionKind::RANDOM, "★ Random Gores map"},
++				    });
++	ExpectPage(m_Catalog, DdraceTypes, {
++						   {EOptionKind::BACK, "‹  Back to map categories"},
++						   {EOptionKind::FOLDER, "Browse Novice maps  ›"},
++					   });
++	ExpectPage(m_Catalog, GoresTypes, {
++						  {EOptionKind::BACK, "‹  Back to map categories"},
++						  {EOptionKind::FOLDER, "Browse Hard maps  ›"},
++					  });
++	ExpectPage(m_Catalog, DdraceNovice, {
++						    {EOptionKind::BACK, "‹  Back to DDRace difficulties"},
++						    {EOptionKind::RANDOM, "★ Random Novice map"},
++						    {EOptionKind::MAP, "Alpha"},
++					    });
++	ExpectPage(m_Catalog, GoresHard, {
++						 {EOptionKind::BACK, "‹  Back to Gores difficulties"},
++						 {EOptionKind::RANDOM, "★ Random Hard map"},
++						 {EOptionKind::MAP, "Omega"},
++					 });
++	ExpectPage(m_Catalog, Others, {
++					      {EOptionKind::BACK, "‹  Back to map categories"},
++					      {EOptionKind::MAP, "dm_1"},
++				      });
++
++	const CMapVoteCatalog::SEntry *pDdraceFolder = m_Catalog.OptionAt(Root, 0);
++	const CMapVoteCatalog::SEntry *pGoresFolder = m_Catalog.OptionAt(Root, 1);
++	const CMapVoteCatalog::SEntry *pOthersFolder = m_Catalog.OptionAt(Root, 2);
++	ASSERT_NE(pDdraceFolder, nullptr);
++	ASSERT_NE(pGoresFolder, nullptr);
++	ASSERT_NE(pOthersFolder, nullptr);
++	EXPECT_EQ(pDdraceFolder->m_TargetPage, DdraceTypes);
++	EXPECT_EQ(pGoresFolder->m_TargetPage, GoresTypes);
++	EXPECT_EQ(pOthersFolder->m_TargetPage, Others);
++
++	const CMapVoteCatalog::SEntry *pNoviceFolder = m_Catalog.OptionAt(DdraceTypes, 1);
++	const CMapVoteCatalog::SEntry *pHardFolder = m_Catalog.OptionAt(GoresTypes, 1);
++	ASSERT_NE(pNoviceFolder, nullptr);
++	ASSERT_NE(pHardFolder, nullptr);
++	EXPECT_EQ(pNoviceFolder->m_TargetPage, DdraceNovice);
++	EXPECT_EQ(pHardFolder->m_TargetPage, GoresHard);
++	EXPECT_EQ(m_Catalog.OptionAt(DdraceNovice, 0)->m_TargetPage, DdraceTypes);
++	EXPECT_EQ(m_Catalog.OptionAt(GoresHard, 0)->m_TargetPage, GoresTypes);
++	EXPECT_EQ(m_Catalog.OptionAt(Others, 0)->m_TargetPage, Root);
++
++	ExpectResolvedCommand(m_Catalog, m_Catalog.OptionAt(Root, 3), "change_map \"tw_maps/ddnet-maps-master/types/novice/maps/Alpha\"");
++	ExpectResolvedCommand(m_Catalog, m_Catalog.OptionAt(Root, 4), "change_map \"tw_maps/KoGmaps-main/HARD/Omega\"");
++	ExpectResolvedCommand(m_Catalog, m_Catalog.OptionAt(DdraceNovice, 1), "change_map \"tw_maps/ddnet-maps-master/types/novice/maps/Alpha\"");
++	ExpectResolvedCommand(m_Catalog, m_Catalog.OptionAt(GoresHard, 1), "change_map \"tw_maps/KoGmaps-main/HARD/Omega\"");
++	ExpectResolvedCommand(m_Catalog, m_Catalog.OptionAt(DdraceNovice, 2), "change_map \"tw_maps/ddnet-maps-master/types/novice/maps/Alpha\"");
++	ExpectResolvedCommand(m_Catalog, m_Catalog.OptionAt(GoresHard, 2), "change_map \"tw_maps/KoGmaps-main/HARD/Omega\"");
++	const CMapVoteCatalog::SEntry *pOtherMap = m_Catalog.OptionAt(Others, 1);
++	ExpectResolvedCommand(m_Catalog, pOtherMap, "change_map \"dm_1\"");
++	char aTruncatedCommand[8] = "stale";
++	ASSERT_FALSE(m_Catalog.ResolveCommand(*pOtherMap, aTruncatedCommand, sizeof(aTruncatedCommand)));
++	EXPECT_STREQ(aTruncatedCommand, "");
++
++	EXPECT_NE(m_Catalog.Find(Root, pDdraceFolder->m_Description.c_str()), nullptr);
++	EXPECT_EQ(m_Catalog.Find(DdraceTypes, pDdraceFolder->m_Description.c_str()), nullptr);
++	EXPECT_EQ(m_Catalog.Find(GoresTypes, pDdraceFolder->m_Description.c_str()), nullptr);
++	EXPECT_EQ(m_Catalog.OptionAt(DdraceTypes, 0)->m_TargetPage, Root);
++	EXPECT_EQ(m_Catalog.OptionAt(GoresTypes, 0)->m_TargetPage, Root);
++	EXPECT_EQ(m_Catalog.Find(GoresHard, m_Catalog.OptionAt(DdraceNovice, 1)->m_Description.c_str()), nullptr);
++}
++
++TEST_F(CMapVoteCatalogTest, DisambiguatesFriendlyTypeNameCollisions)
++{
++	constexpr const char *pFirstType = "maps/tw_maps/ddnet-maps-master/types/foo.bar";
++	constexpr const char *pFirstMaps = "maps/tw_maps/ddnet-maps-master/types/foo.bar/maps";
++	constexpr const char *pFirstMap = "maps/tw_maps/ddnet-maps-master/types/foo.bar/maps/First.map";
++	constexpr const char *pSecondType = "maps/tw_maps/ddnet-maps-master/types/foo_bar";
++	constexpr const char *pSecondMaps = "maps/tw_maps/ddnet-maps-master/types/foo_bar/maps";
++	constexpr const char *pSecondMap = "maps/tw_maps/ddnet-maps-master/types/foo_bar/maps/Second.map";
++	ASSERT_TRUE(CreateDirectory(pFirstType));
++	ASSERT_TRUE(CreateDirectory(pFirstMaps));
++	ASSERT_TRUE(CreateMap(pFirstMap));
++	ASSERT_TRUE(CreateDirectory(pSecondType));
++	ASSERT_TRUE(CreateDirectory(pSecondMaps));
++	ASSERT_TRUE(CreateMap(pSecondMap));
++
++	std::string Error;
++	ASSERT_TRUE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Error)) << Error;
++	const SPageId DdraceTypes{EPage::DDRACE_TYPES, -1};
++	const CMapVoteCatalog::SEntry *pFirstFolder = m_Catalog.Find(DdraceTypes, "Browse Foo Bar [foo.bar] maps  ›");
++	const CMapVoteCatalog::SEntry *pSecondFolder = m_Catalog.Find(DdraceTypes, "Browse Foo Bar [foo_bar] maps  ›");
++	ASSERT_NE(pFirstFolder, nullptr);
++	ASSERT_NE(pSecondFolder, nullptr);
++	EXPECT_FALSE(pFirstFolder->m_TargetPage == pSecondFolder->m_TargetPage);
++	ASSERT_NE(m_Catalog.Find(pFirstFolder->m_TargetPage, "First"), nullptr);
++	ASSERT_NE(m_Catalog.Find(pSecondFolder->m_TargetPage, "Second"), nullptr);
++}
++
++TEST_F(CMapVoteCatalogTest, FailedRebuildPreservesPublishedCatalog)
++{
++	std::string Error;
++	ASSERT_TRUE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Error)) << Error;
++	const SPageId Root{EPage::ROOT, -1};
++	const CMapVoteCatalog::SEntry *pPublishedGoresRandom = m_Catalog.OptionAt(Root, 4);
++	ASSERT_NE(pPublishedGoresRandom, nullptr);
++	const std::string PublishedDescription = pPublishedGoresRandom->m_Description;
++
++	ASSERT_TRUE(m_pStorage->RemoveFile(GORES_MAP, IStorage::TYPE_SAVE));
++	Error.clear();
++	EXPECT_FALSE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Error));
++	EXPECT_FALSE(Error.empty());
++
++	EXPECT_TRUE(m_Catalog.Active());
++	EXPECT_EQ(m_Catalog.MapCount(), 3);
++	EXPECT_EQ(m_Catalog.OptionCount(Root), 5);
++	const CMapVoteCatalog::SEntry *pPreservedGoresRandom = m_Catalog.Find(Root, PublishedDescription.c_str());
++	ExpectResolvedCommand(m_Catalog, pPreservedGoresRandom, "change_map \"tw_maps/KoGmaps-main/HARD/Omega\"");
++}
+-- 
+2.53.0
+

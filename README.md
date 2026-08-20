@@ -5,15 +5,24 @@ for candidate feature testing. It listens publicly on UDP port
 `8305` and runs as the `lgcy` user service
 `tee-world-candidate-testing-ddnet.service`.
 
-The source is pinned to the official DDNet `19.9` tag. The runtime starts on
-the bundled `Tutorial` map with the standard `ddnet` controller, which
-advertises the `DDraceNetwork` game type.
+The source is pinned to the official DDNet `19.9` tag. A tracked server-only
+patch adds clean, browsable map-vote pages for unmodified DDNet clients. The
+runtime starts on the shared `Tutorial` map with the standard `ddnet`
+controller, which advertises the `DDraceNetwork` game type.
+
+The map corpus has one authority: `/srv/multi_tas/data/maps`. This server reads
+all 3,511 DDRace, Gores, and root maps directly from that path. It does not copy
+or synchronize the corpus. Map votes are rebuilt automatically after every map
+change, and random DDRace and Gores choices use the same catalog.
 
 ## Layout
 
 - `source/ddnet/` — pinned official DDNet source
+- `patches/` — tracked server-only map voting patch
+- `build/source-map-voting/` — generated patched source (ignored)
+- `build/ddnet-map-voting/` — generated patched build (ignored)
 - `build/ddnet/DDNet-Server` — release server build
-- `server/` — configuration, startup map, logs, FIFO, and SQLite score state
+- `server/` — configuration, logs, FIFO, and SQLite score state
 - `deploy/` — installed user-systemd unit source
 - `scripts/` — build and lifecycle commands
 
@@ -28,7 +37,7 @@ Run these commands as `lgcy`:
 ./scripts/start-server.sh
 ```
 
-Build the pinned server source with:
+Build the pinned source plus the tracked server patch with:
 
 ```bash
 ./scripts/build-server.sh
@@ -37,6 +46,11 @@ Build the pinned server source with:
 The join and RCON credentials are stored only in the ignored
 `server/secrets.cfg` file with mode `0600`. Writable runtime data stays under
 `server/`. The command FIFO is `server/run/ddnet-server.fifo`.
+
+`sv_map_vote_catalog 1` republishes the catalog on each map load. RCON can also
+run `add_map_catalog_votes` to rebuild it immediately after the shared corpus is
+updated. The catalog is immutable while active; run `clear_votes` first only
+when intentionally switching back to legacy vote options.
 
 ## Connection
 

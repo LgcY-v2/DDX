@@ -1,5 +1,6 @@
 .toolchain/
 build/
+future/
 server/demos/
 server/dumps/
 server/ghosts/

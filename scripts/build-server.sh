@@ -2,6 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+UPSTREAM_SOURCE="$ROOT_DIR/source/ddnet"
+PATCH_FILE="$ROOT_DIR/patches/0001-feat-server-add-stock-client-map-vote-catalog.patch"
+PATCHED_SOURCE="$ROOT_DIR/build/source-map-voting"
+PATCHED_BUILD="$ROOT_DIR/build/ddnet-map-voting"
+RUNTIME_BINARY="$ROOT_DIR/build/ddnet/DDNet-Server"
 SYSROOT="$ROOT_DIR/.toolchain/sysroot"
 CARGO_HOME="$ROOT_DIR/.toolchain/cargo"
 RUSTUP_HOME="$ROOT_DIR/.toolchain/rustup"
@@ -15,14 +20,47 @@ export LD_LIBRARY_PATH="$SYSROOT/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD
 export CARGO_HOME RUSTUP_HOME CC CXX
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$CC"
 
-for executable in "$CC" "$CXX" "$CMAKE" "$NINJA" "$CARGO_HOME/bin/cargo"; do
+for executable in "$CC" "$CXX" "$CMAKE" "$NINJA" "$CARGO_HOME/bin/cargo" /usr/bin/git /usr/bin/patch /usr/bin/tar; do
 	if [[ ! -x "$executable" ]]; then
 		echo "The project toolchain is incomplete: $executable is missing." >&2
 		exit 1
 	fi
 done
 
-"$CMAKE" -S "$ROOT_DIR/source/ddnet" -B "$ROOT_DIR/build/ddnet" -G Ninja \
+EXPECTED_UPSTREAM_REVISION="e5ebaeaad935abc65cf0470a1701877fa258856b"
+ACTUAL_UPSTREAM_REVISION="$(/usr/bin/git -C "$UPSTREAM_SOURCE" rev-parse HEAD)"
+if [[ "$ACTUAL_UPSTREAM_REVISION" != "$EXPECTED_UPSTREAM_REVISION" ]]; then
+	echo "Refusing to patch unexpected DDNet revision $ACTUAL_UPSTREAM_REVISION." >&2
+	exit 1
+fi
+export DDNET_GIT_SHORTREV_HASH="${EXPECTED_UPSTREAM_REVISION:0:16}"
+if [[ ! -f "$PATCH_FILE" ]]; then
+	echo "Map voting patch is missing: $PATCH_FILE" >&2
+	exit 1
+fi
+
+install -d -m 755 "$ROOT_DIR/build"
+STAGED_SOURCE="$(mktemp -d "$ROOT_DIR/build/.source-map-voting.XXXXXX")"
+cleanup() {
+	if [[ -n "$STAGED_SOURCE" ]]; then
+		rm -rf -- "$STAGED_SOURCE"
+	fi
+}
+trap cleanup EXIT
+
+/usr/bin/git -C "$UPSTREAM_SOURCE" archive --format=tar HEAD | /usr/bin/tar -xf - -C "$STAGED_SOURCE"
+rmdir "$STAGED_SOURCE/ddnet-libs"
+ln -s "$UPSTREAM_SOURCE/ddnet-libs" "$STAGED_SOURCE/ddnet-libs"
+(
+	cd "$STAGED_SOURCE"
+	/usr/bin/patch --batch --forward -p1 <"$PATCH_FILE"
+)
+
+rm -rf -- "$PATCHED_SOURCE"
+mv "$STAGED_SOURCE" "$PATCHED_SOURCE"
+STAGED_SOURCE=""
+
+"$CMAKE" -S "$PATCHED_SOURCE" -B "$PATCHED_BUILD" -G Ninja \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_C_COMPILER="$CC" \
 	-DCMAKE_CXX_COMPILER="$CXX" \
@@ -38,6 +76,15 @@ done
 	-DAUTOUPDATE=OFF \
 	-DDOWNLOAD_GTEST=OFF
 
-"$CMAKE" --build "$ROOT_DIR/build/ddnet" --target DDNet-Server -j "${JOBS:-2}"
+# The environment-provided upstream revision is part of the generated source,
+# but CMake cannot track environment changes as dependencies. Refresh the
+# generator input so reused build trees cannot retain a stale revision string.
+touch "$PATCHED_SOURCE/scripts/git_revision.py"
+"$CMAKE" --build "$PATCHED_BUILD" --target DDNet-Server -j "${JOBS:-2}"
 
-echo "Built $ROOT_DIR/build/ddnet/DDNet-Server"
+# Keep the unit's stable binary path and replace it only after a successful
+# compile and link, so a failed build cannot damage the running deployment.
+install -m 755 "$PATCHED_BUILD/DDNet-Server" "$RUNTIME_BINARY.next"
+mv -f "$RUNTIME_BINARY.next" "$RUNTIME_BINARY"
+
+echo "Built patched DDNet server at $RUNTIME_BINARY"
