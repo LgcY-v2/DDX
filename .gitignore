@@ -1,4 +1,5 @@
 .toolchain/
+__pycache__/
 build/
 future/
 server/demos/
@@ -9,3 +10,8 @@ server/run/
 server/secrets.cfg
 server/state/
 server/teehistorian/
+server/maps/warehouse/
+warehouse/archive/
+warehouse/delta/
+warehouse/index/
+warehouse/tools/

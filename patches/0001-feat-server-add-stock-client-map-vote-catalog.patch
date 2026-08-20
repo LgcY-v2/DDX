@@ -1,71 +1,131 @@
-From e6fe864d50606808680bb683ea56bdfbf75a8316 Mon Sep 17 00:00:00 2001
+From 5023128b7bf93396513aa60b95dc94139fffb948 Mon Sep 17 00:00:00 2001
 From: root <root@vps-b11ef210.vps.ovh.net>
-Date: Thu, 20 Aug 2026 00:49:50 +0000
-Subject: [PATCH] feat(server): add stock-client map vote catalog
+Date: Thu, 20 Aug 2026 02:54:46 +0000
+Subject: [PATCH] feat(server): add verified historical map search
 
 ---
- CMakeLists.txt                       |   3 +
- src/engine/shared/config_variables.h |   1 +
- src/game/server/gamecontext.cpp      | 238 ++++++++++++--
- src/game/server/gamecontext.h        |   6 +
- src/game/server/map_vote_catalog.cpp | 453 +++++++++++++++++++++++++++
- src/game/server/map_vote_catalog.h   |  97 ++++++
- src/game/server/player.cpp           |   3 +
- src/game/server/player.h             |   3 +
- src/test/map_vote_catalog_test.cpp   | 282 +++++++++++++++++
- 9 files changed, 1060 insertions(+), 26 deletions(-)
+ CMakeLists.txt                       |    6 +
+ src/engine/shared/config_variables.h |    9 +
+ src/game/server/gamecontext.cpp      |  397 ++++++++-
+ src/game/server/gamecontext.h        |   14 +
+ src/game/server/map_vote_catalog.cpp |  661 +++++++++++++++
+ src/game/server/map_vote_catalog.h   |  119 +++
+ src/game/server/map_warehouse.cpp    | 1109 ++++++++++++++++++++++++++
+ src/game/server/map_warehouse.h      |  106 +++
+ src/game/server/player.cpp           |    5 +
+ src/game/server/player.h             |    5 +
+ src/test/map_vote_catalog_test.cpp   |  285 +++++++
+ src/test/map_warehouse_test.cpp      |  416 ++++++++++
+ 12 files changed, 3106 insertions(+), 26 deletions(-)
  create mode 100644 src/game/server/map_vote_catalog.cpp
  create mode 100644 src/game/server/map_vote_catalog.h
+ create mode 100644 src/game/server/map_warehouse.cpp
+ create mode 100644 src/game/server/map_warehouse.h
  create mode 100644 src/test/map_vote_catalog_test.cpp
+ create mode 100644 src/test/map_warehouse_test.cpp
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 3695ae7..50e1a19 100644
+index 3695ae7..63ac013 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -2979,6 +2979,8 @@ if(SERVER)
+@@ -2979,6 +2979,10 @@ if(SERVER)
      gameworld.h
      interactions.cpp
      interactions.h
 +    map_vote_catalog.cpp
 +    map_vote_catalog.h
++    map_warehouse.cpp
++    map_warehouse.h
      mutes.cpp
      player.cpp
      player.h
-@@ -3239,6 +3241,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
+@@ -3239,6 +3243,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
      json_test.cpp
      jsonwriter_test.cpp
      linereader_test.cpp
 +    map_vote_catalog_test.cpp
++    map_warehouse_test.cpp
      mapbugs_test.cpp
      mapitems_test.cpp
      math_test.cpp
 diff --git a/src/engine/shared/config_variables.h b/src/engine/shared/config_variables.h
-index b091e83..20587ac 100644
+index b091e83..46911f7 100644
 --- a/src/engine/shared/config_variables.h
 +++ b/src/engine/shared/config_variables.h
-@@ -596,6 +596,7 @@ MACRO_CONFIG_INT(SvTeam, sv_team, 1, 0, 3, CFGFLAG_SERVER | CFGFLAG_GAME, "Teams
+@@ -596,6 +596,15 @@ MACRO_CONFIG_INT(SvTeam, sv_team, 1, 0, 3, CFGFLAG_SERVER | CFGFLAG_GAME, "Teams
  MACRO_CONFIG_INT(SvMinTeamSize, sv_min_team_size, 2, 1, SERVER_MAX_CLIENTS, CFGFLAG_SERVER | CFGFLAG_GAME, "Minimum team size (finishing in a team smaller than this size gives you no teamrank)")
  MACRO_CONFIG_INT(SvMaxTeamSize, sv_max_team_size, SERVER_MAX_CLIENTS, 1, SERVER_MAX_CLIENTS, CFGFLAG_SERVER | CFGFLAG_GAME, "Maximum team size")
  MACRO_CONFIG_INT(SvMapVote, sv_map_vote, 1, 0, 1, CFGFLAG_SERVER, "Whether to allow /map")
 +MACRO_CONFIG_INT(SvMapVoteCatalog, sv_map_vote_catalog, 0, 0, 1, CFGFLAG_SERVER, "Publish the browsable DDRace and Gores map catalog on every map")
++MACRO_CONFIG_STR(SvMapWarehouseIndex, sv_map_warehouse_index, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "Verified map warehouse search index")
++MACRO_CONFIG_STR(SvMapWarehouseArchive, sv_map_warehouse_archive, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "Verified map warehouse 7z archive")
++MACRO_CONFIG_STR(SvMapWarehouseDelta, sv_map_warehouse_delta, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "Directory containing verified map warehouse delta files")
++MACRO_CONFIG_STR(SvMapWarehouseExtractor, sv_map_warehouse_extractor, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "7-Zip executable used by the map warehouse")
++MACRO_CONFIG_STR(SvMapWarehouseState, sv_map_warehouse_state, IO_MAX_PATH_LENGTH, "state/map-warehouse-collections.tsv", CFGFLAG_SERVER, "Persistent search collection state file")
++MACRO_CONFIG_STR(SvMapWarehouseCache, sv_map_warehouse_cache, IO_MAX_PATH_LENGTH, "maps/warehouse", CFGFLAG_SERVER, "Bounded extracted map cache below the save path")
++MACRO_CONFIG_INT(SvMapWarehouseCacheMegabytes, sv_map_warehouse_cache_megabytes, 2048, 64, 8192, CFGFLAG_SERVER, "Maximum map warehouse cache size in MiB")
++MACRO_CONFIG_INT(SvMapWarehouseCacheMaps, sv_map_warehouse_cache_maps, 256, 2, 2048, CFGFLAG_SERVER, "Maximum number of maps in the map warehouse cache")
  
  MACRO_CONFIG_STR(SvAnnouncementFilename, sv_announcement_filename, IO_MAX_PATH_LENGTH, "announcement.txt", CFGFLAG_SERVER, "File which contains the announcements, one on each line")
  MACRO_CONFIG_INT(SvAnnouncementInterval, sv_announcement_interval, 120, 1, 9999, CFGFLAG_SERVER, "The time (minutes) for how often an announcement will be displayed from the announcement file")
 diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
-index e9a7f6f..ca8e0e4 100644
+index e9a7f6f..163c403 100644
 --- a/src/game/server/gamecontext.cpp
 +++ b/src/game/server/gamecontext.cpp
-@@ -1597,6 +1597,64 @@ const CVoteOptionServer *CGameContext::GetVoteOption(int Index) const
+@@ -1161,6 +1161,7 @@ void CGameContext::OnTick()
+ {
+ 	// check tuning
+ 	CheckPureTuning();
++	ProgressMapWarehouse();
+ 
+ 	if(m_TeeHistorianActive)
+ 	{
+@@ -1597,6 +1598,108 @@ const CVoteOptionServer *CGameContext::GetVoteOption(int Index) const
  	return pCurrent;
  }
  
++void CGameContext::ProgressMapWarehouse()
++{
++	const CMapWarehouse::SPreparedMap Prepared = m_MapWarehouse.PollPreparedMap();
++	if(Prepared.m_Finished)
++	{
++		m_LastMapWarehouseProgressMessage = 0;
++		char aMessage[256];
++		if(Prepared.m_Success)
++		{
++			str_format(aMessage, sizeof(aMessage), "Archive map ready: %s. Changing map now.", Prepared.m_DisplayName.c_str());
++			SendChat(-1, TEAM_ALL, aMessage);
++			Server()->ChangeMap(Prepared.m_MapPath.c_str());
++		}
++		else
++		{
++			str_format(aMessage, sizeof(aMessage), "Could not prepare %s: %s", Prepared.m_DisplayName.c_str(), Prepared.m_Error.c_str());
++			SendChat(-1, TEAM_ALL, aMessage);
++			Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "map-warehouse", aMessage);
++		}
++		return;
++	}
++	if(!m_MapWarehouse.Busy())
++		return;
++	const int64_t Now = time_get();
++	const int64_t ElapsedSeconds = (Now - m_MapWarehouse.PrepareStartTime()) / time_freq();
++	if(ElapsedSeconds >= 10 && (m_LastMapWarehouseProgressMessage == 0 || Now - m_LastMapWarehouseProgressMessage >= 15 * time_freq()))
++	{
++		char aMessage[192];
++		str_format(aMessage, sizeof(aMessage), "Preparing %s from the archive… %lld seconds", m_MapWarehouse.PreparingDisplayName().c_str(), static_cast<long long>(ElapsedSeconds));
++		SendChat(-1, TEAM_ALL, aMessage);
++		m_LastMapWarehouseProgressMessage = Now;
++	}
++}
++
 +CMapVoteCatalog::SPageId CGameContext::MapVotePage(int ClientId) const
 +{
 +	if(ClientId < 0 || ClientId >= MAX_CLIENTS || !m_apPlayers[ClientId])
 +		return {};
 +	CMapVoteCatalog::SPageId Page{
 +		static_cast<CMapVoteCatalog::EPage>(m_apPlayers[ClientId]->m_MapVotePage),
-+		m_apPlayers[ClientId]->m_MapVoteType};
++		m_apPlayers[ClientId]->m_MapVoteType,
++		m_apPlayers[ClientId]->m_MapVoteSubPage};
 +	if(m_MapVoteCatalog.Active() && m_MapVoteCatalog.OptionCount(Page) > 0)
 +		return Page;
 +	return {};
@@ -82,13 +142,21 @@ index e9a7f6f..ca8e0e4 100644
 +	Server()->SendPackMsg(&ClearMsg, MSGFLAG_VITAL, ClientId);
 +	m_apPlayers[ClientId]->m_MapVotePage = static_cast<int>(Page.m_Page);
 +	m_apPlayers[ClientId]->m_MapVoteType = Page.m_Type;
++	m_apPlayers[ClientId]->m_MapVoteSubPage = Page.m_SubPage;
 +	m_apPlayers[ClientId]->m_SendVoteIndex = 0;
 +}
 +
 +bool CGameContext::PublishMapVoteCatalog()
 +{
 +	std::string Error;
-+	if(!m_MapVoteCatalog.Build(Storage(), Console(), &Error))
++	if(g_Config.m_SvMapWarehouseIndex[0] && !m_MapWarehouse.Load(Storage(), Console(), g_Config.m_SvMapWarehouseIndex, g_Config.m_SvMapWarehouseState, &Error))
++	{
++		char aMessage[256];
++		str_format(aMessage, sizeof(aMessage), "failed to load map warehouse: %s", Error.c_str());
++		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "map-warehouse", aMessage);
++		return false;
++	}
++	if(!m_MapVoteCatalog.Build(Storage(), Console(), m_MapWarehouse.Active() ? &m_MapWarehouse : nullptr, &Error))
 +	{
 +		char aMessage[256];
 +		str_format(aMessage, sizeof(aMessage), "failed to publish map catalog: %s", Error.c_str());
@@ -111,6 +179,7 @@ index e9a7f6f..ca8e0e4 100644
 +			continue;
 +		pPlayer->m_MapVotePage = static_cast<int>(CMapVoteCatalog::EPage::ROOT);
 +		pPlayer->m_MapVoteType = -1;
++		pPlayer->m_MapVoteSubPage = 0;
 +		pPlayer->m_LastMapVoteNavigationTick = -1;
 +		pPlayer->m_SendVoteIndex = 0;
 +	}
@@ -120,7 +189,7 @@ index e9a7f6f..ca8e0e4 100644
  void CGameContext::ProgressVoteOptions(int ClientId)
  {
  	CPlayer *pPl = m_apPlayers[ClientId];
-@@ -1604,10 +1662,17 @@ void CGameContext::ProgressVoteOptions(int ClientId)
+@@ -1604,10 +1707,17 @@ void CGameContext::ProgressVoteOptions(int ClientId)
  	if(pPl->m_SendVoteIndex == -1)
  		return; // we didn't start sending options yet
  
@@ -141,7 +210,7 @@ index e9a7f6f..ca8e0e4 100644
  	int NumVotesToSend = std::min(g_Config.m_SvSendVotesPerTick, VotesLeft);
  
  	if(!VotesLeft)
-@@ -1637,31 +1702,44 @@ void CGameContext::ProgressVoteOptions(int ClientId)
+@@ -1637,31 +1747,44 @@ void CGameContext::ProgressVoteOptions(int ClientId)
  	OptionMsg.m_pDescription14 = "";
  
  	// get current vote option by index
@@ -204,7 +273,7 @@ index e9a7f6f..ca8e0e4 100644
  	}
  
  	// send msg
-@@ -1671,12 +1749,12 @@ void CGameContext::ProgressVoteOptions(int ClientId)
+@@ -1671,12 +1794,12 @@ void CGameContext::ProgressVoteOptions(int ClientId)
  		Server()->SendPackMsg(&StartMsg, MSGFLAG_VITAL, ClientId);
  	}
  
@@ -220,7 +289,7 @@ index e9a7f6f..ca8e0e4 100644
  	{
  		CNetMsg_Sv_VoteOptionGroupEnd EndMsg;
  		Server()->SendPackMsg(&EndMsg, MSGFLAG_VITAL, ClientId);
-@@ -2426,6 +2504,26 @@ void CGameContext::OnSayNetMessage(const CNetMsg_Cl_Say *pMsg, int ClientId, con
+@@ -2426,6 +2549,31 @@ void CGameContext::OnSayNetMessage(const CNetMsg_Cl_Say *pMsg, int ClientId, con
  
  void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int ClientId)
  {
@@ -243,11 +312,16 @@ index e9a7f6f..ca8e0e4 100644
 +		NavigateMapVotes(ClientId, pMapEntry->m_TargetPage);
 +		return;
 +	}
++	if(pMapEntry && CMapVoteCatalog::IsInformational(pMapEntry->m_Kind))
++	{
++		SendChatTarget(ClientId, pMapEntry->m_InfoText.c_str());
++		return;
++	}
 +
  	if(RateLimitPlayerVote(ClientId) || m_VoteCloseTime)
  		return;
  
-@@ -2442,7 +2540,22 @@ void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int Cli
+@@ -2442,7 +2590,22 @@ void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int Cli
  		str_copy(aReason, pMsg->m_pReason);
  	}
  
@@ -271,7 +345,7 @@ index e9a7f6f..ca8e0e4 100644
  	{
  		CVoteOptionServer *pOption = m_pVoteOptionFirst;
  		while(pOption)
-@@ -2508,7 +2621,6 @@ void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int Cli
+@@ -2508,7 +2671,6 @@ void CGameContext::OnCallVoteNetMessage(const CNetMsg_Cl_CallVote *pMsg, int Cli
  				str_copy(aCmd, pMsg->m_pValue);
  			}
  		}
@@ -279,17 +353,18 @@ index e9a7f6f..ca8e0e4 100644
  		m_VoteType = VOTE_TYPE_OPTION;
  	}
  	else if(str_comp_nocase(pMsg->m_pType, "kick") == 0)
-@@ -3104,6 +3216,9 @@ void CGameContext::OnStartInfoNetMessage(const CNetMsg_Cl_StartInfo *pMsg, int C
+@@ -3104,6 +3266,10 @@ void CGameContext::OnStartInfoNetMessage(const CNetMsg_Cl_StartInfo *pMsg, int C
  	Server()->SendPackMsg(&ClearMsg, MSGFLAG_VITAL, ClientId);
  
  	// begin sending vote options
 +	pPlayer->m_MapVotePage = static_cast<int>(CMapVoteCatalog::EPage::ROOT);
 +	pPlayer->m_MapVoteType = -1;
++	pPlayer->m_MapVoteSubPage = 0;
 +	pPlayer->m_LastMapVoteNavigationTick = -1;
  	pPlayer->m_SendVoteIndex = 0;
  
  	// send tuning parameters to client
-@@ -3537,6 +3652,11 @@ void CGameContext::ConHotReload(IConsole::IResult *pResult, void *pUserData)
+@@ -3537,6 +3703,11 @@ void CGameContext::ConHotReload(IConsole::IResult *pResult, void *pUserData)
  void CGameContext::ConAddVote(IConsole::IResult *pResult, void *pUserData)
  {
  	CGameContext *pSelf = (CGameContext *)pUserData;
@@ -301,7 +376,7 @@ index e9a7f6f..ca8e0e4 100644
  	const char *pDescription = pResult->GetString(0);
  	const char *pCommand = pResult->GetString(1);
  
-@@ -3545,6 +3665,11 @@ void CGameContext::ConAddVote(IConsole::IResult *pResult, void *pUserData)
+@@ -3545,6 +3716,11 @@ void CGameContext::ConAddVote(IConsole::IResult *pResult, void *pUserData)
  
  void CGameContext::AddVote(const char *pDescription, const char *pCommand)
  {
@@ -313,7 +388,7 @@ index e9a7f6f..ca8e0e4 100644
  	if(m_NumVoteOptions == MAX_VOTE_OPTIONS)
  	{
  		Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "maximum number of vote options reached");
-@@ -3603,6 +3728,11 @@ void CGameContext::AddVote(const char *pDescription, const char *pCommand)
+@@ -3603,6 +3779,11 @@ void CGameContext::AddVote(const char *pDescription, const char *pCommand)
  void CGameContext::ConRemoveVote(IConsole::IResult *pResult, void *pUserData)
  {
  	CGameContext *pSelf = (CGameContext *)pUserData;
@@ -325,7 +400,7 @@ index e9a7f6f..ca8e0e4 100644
  	const char *pDescription = pResult->GetString(0);
  
  	// check for valid option
-@@ -3679,6 +3809,34 @@ void CGameContext::ConForceVote(IConsole::IResult *pResult, void *pUserData)
+@@ -3679,6 +3860,40 @@ void CGameContext::ConForceVote(IConsole::IResult *pResult, void *pUserData)
  
  	if(str_comp_nocase(pType, "option") == 0)
  	{
@@ -345,6 +420,12 @@ index e9a7f6f..ca8e0e4 100644
 +					pSelf->NavigateMapVotes(pResult->m_ClientId, pEntry->m_TargetPage);
 +				return;
 +			}
++			if(CMapVoteCatalog::IsInformational(pEntry->m_Kind))
++			{
++				if(pResult->m_ClientId >= 0 && pResult->m_ClientId < MAX_CLIENTS)
++					pSelf->SendChatTarget(pResult->m_ClientId, pEntry->m_InfoText.c_str());
++				return;
++			}
 +			char aCommand[VOTE_CMD_LENGTH];
 +			if(!pSelf->m_MapVoteCatalog.ResolveCommand(*pEntry, aCommand, sizeof(aCommand)) || !pSelf->Console()->LineIsValid(aCommand))
 +			{
@@ -360,7 +441,7 @@ index e9a7f6f..ca8e0e4 100644
  		CVoteOptionServer *pOption = pSelf->m_pVoteOptionFirst;
  		while(pOption)
  		{
-@@ -3747,15 +3905,28 @@ void CGameContext::ConClearVotes(IConsole::IResult *pResult, void *pUserData)
+@@ -3747,13 +3962,121 @@ void CGameContext::ConClearVotes(IConsole::IResult *pResult, void *pUserData)
  	pSelf->m_pVoteOptionFirst = nullptr;
  	pSelf->m_pVoteOptionLast = nullptr;
  	pSelf->m_NumVoteOptions = 0;
@@ -374,11 +455,12 @@ index e9a7f6f..ca8e0e4 100644
  			pPlayer->m_SendVoteIndex = 0;
 +			pPlayer->m_MapVotePage = static_cast<int>(CMapVoteCatalog::EPage::ROOT);
 +			pPlayer->m_MapVoteType = -1;
++			pPlayer->m_MapVoteSubPage = 0;
 +			pPlayer->m_LastMapVoteNavigationTick = -1;
 +		}
- 	}
- }
- 
++	}
++}
++
 +void CGameContext::ConAddMapCatalogVotes(IConsole::IResult *pResult, void *pUserData)
 +{
 +	(void)pResult;
@@ -386,10 +468,102 @@ index e9a7f6f..ca8e0e4 100644
 +	pSelf->PublishMapVoteCatalog();
 +}
 +
++void CGameContext::ConMapSearch(IConsole::IResult *pResult, void *pUserData)
++{
++	auto *pSelf = static_cast<CGameContext *>(pUserData);
++	const int ClientId = pResult->m_ClientId;
++	const bool ChatClient = ClientId >= 0 && ClientId < MAX_CLIENTS && pSelf->m_apPlayers[ClientId];
++	if(pResult->NumArguments() == 0)
++	{
++		if(ChatClient)
++		{
++			pSelf->SendChatTarget(ClientId, "Usage: /search <words or wildcards> [--name collection]");
++			pSelf->SendChatTarget(ClientId, "Example: /search *aip*race* --name AIP Race");
++			pSelf->SendChatTarget(ClientId, "Use separate words for any order, * for any text, ? for one character, and -word to exclude.");
++		}
++		else
++			pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "map-warehouse", "usage: search <words or wildcards> [--name collection]");
++		return;
++	}
++	CPlayer *pPlayer = ChatClient ? pSelf->m_apPlayers[ClientId] : nullptr;
++	if(ChatClient)
++	{
++		const int PlayerCooldown = 10 * pSelf->Server()->TickSpeed();
++		const int GlobalCooldown = 2 * pSelf->Server()->TickSpeed();
++		if((pPlayer->m_LastMapWarehouseSearchTick >= 0 && pPlayer->m_LastMapWarehouseSearchTick + PlayerCooldown > pSelf->Server()->Tick()) ||
++			(pSelf->m_LastMapWarehouseSearchTick >= 0 && pSelf->m_LastMapWarehouseSearchTick + GlobalCooldown > pSelf->Server()->Tick()))
++		{
++			pSelf->SendChatTarget(ClientId, "Please wait a moment before searching the archive again");
++			return;
++		}
++		pPlayer->m_LastMapWarehouseSearchTick = pSelf->Server()->Tick();
++		pSelf->m_LastMapWarehouseSearchTick = pSelf->Server()->Tick();
++	}
++	const CMapWarehouse::SSearchResult Search = pSelf->m_MapWarehouse.Search(pResult->GetString(0), pSelf->Storage());
++	if(Search.m_Status == CMapWarehouse::ESearchStatus::ERROR)
++	{
++		if(ChatClient)
++			pSelf->SendChatTarget(ClientId, Search.m_Message.c_str());
++		else
++			pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "map-warehouse", Search.m_Message.c_str());
++		return;
++	}
++	if(Search.m_Status == CMapWarehouse::ESearchStatus::CREATED && !pSelf->PublishMapVoteCatalog())
++	{
++		if(ChatClient)
++			pSelf->SendChatTarget(ClientId, "The search was saved, but the vote menu could not be refreshed");
++		else
++			pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "map-warehouse", "search saved, but the vote menu could not be refreshed");
++		return;
++	}
++	if(ChatClient)
++		pSelf->NavigateMapVotes(ClientId, {CMapVoteCatalog::EPage::WAREHOUSE_COLLECTION, Search.m_CollectionId, 0});
++	char aMessage[256];
++	if(Search.m_AliasMatches > Search.m_UniqueMatches)
++		str_format(aMessage, sizeof(aMessage), "%s: %s · %d unique maps from %d matching names. Open Call vote.", Search.m_Status == CMapWarehouse::ESearchStatus::CREATED ? "Created" : "Ready", Search.m_CollectionName.c_str(), Search.m_UniqueMatches, Search.m_AliasMatches);
++	else
++		str_format(aMessage, sizeof(aMessage), "%s: %s · %d maps. Open Call vote.", Search.m_Status == CMapWarehouse::ESearchStatus::CREATED ? "Created" : "Ready", Search.m_CollectionName.c_str(), Search.m_UniqueMatches);
++	if(ChatClient)
++		pSelf->SendChatTarget(ClientId, aMessage);
++	else
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "map-warehouse", aMessage);
++}
++
++void CGameContext::ConWarehouseMap(IConsole::IResult *pResult, void *pUserData)
++{
++	auto *pSelf = static_cast<CGameContext *>(pUserData);
++	std::string DisplayName;
++	std::string Error;
++	if(!pSelf->m_MapWarehouse.QueueMap(pResult->GetString(0), pSelf->Engine(), pSelf->Storage(), g_Config.m_SvMapWarehouseArchive, g_Config.m_SvMapWarehouseDelta, g_Config.m_SvMapWarehouseExtractor, g_Config.m_SvMapWarehouseCache, g_Config.m_SvMapWarehouseCacheMegabytes, g_Config.m_SvMapWarehouseCacheMaps, pSelf->Map()->FullName(), &DisplayName, &Error))
++	{
++		char aMessage[256];
++		str_format(aMessage, sizeof(aMessage), "Could not prepare archive map: %s", Error.c_str());
++		pSelf->SendChat(-1, TEAM_ALL, aMessage);
++		return;
++	}
++	pSelf->m_LastMapWarehouseProgressMessage = 0;
++	char aMessage[256];
++	str_format(aMessage, sizeof(aMessage), "Vote passed. Preparing %s from the verified archive; solid-map extraction may take a little while.", DisplayName.c_str());
++	pSelf->SendChat(-1, TEAM_ALL, aMessage);
++}
++
++void CGameContext::ConClearMapSearches(IConsole::IResult *pResult, void *pUserData)
++{
++	(void)pResult;
++	auto *pSelf = static_cast<CGameContext *>(pUserData);
++	std::string Error;
++	if(!pSelf->m_MapWarehouse.ClearCollections(pSelf->Storage(), &Error) || !pSelf->PublishMapVoteCatalog())
++	{
++		char aMessage[256];
++		str_format(aMessage, sizeof(aMessage), "failed to clear map searches: %s", Error.c_str());
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "map-warehouse", aMessage);
++		return;
+ 	}
++	pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "map-warehouse", "cleared all persisted map searches");
+ }
+ 
  struct CMapNameItem
- {
- 	char m_aName[IO_MAX_PATH_LENGTH - 4];
-@@ -3776,6 +3947,11 @@ struct CMapNameItem
+@@ -3776,6 +4099,11 @@ struct CMapNameItem
  void CGameContext::ConAddMapVotes(IConsole::IResult *pResult, void *pUserData)
  {
  	CGameContext *pSelf = (CGameContext *)pUserData;
@@ -401,7 +575,7 @@ index e9a7f6f..ca8e0e4 100644
  
  	std::vector<CMapNameItem> vMapList;
  	const char *pDirectory = pResult->GetString(0);
-@@ -3856,6 +4032,13 @@ void CGameContext::ConVote(IConsole::IResult *pResult, void *pUserData)
+@@ -3856,6 +4184,13 @@ void CGameContext::ConVote(IConsole::IResult *pResult, void *pUserData)
  void CGameContext::ConVotes(IConsole::IResult *pResult, void *pUserData)
  {
  	CGameContext *pSelf = (CGameContext *)pUserData;
@@ -415,7 +589,16 @@ index e9a7f6f..ca8e0e4 100644
  
  	int Page = pResult->NumArguments() > 0 ? pResult->GetInteger(0) : 0;
  	static const int s_EntriesPerPage = 20;
-@@ -3977,6 +4160,7 @@ void CGameContext::OnConsoleInit()
+@@ -3960,6 +4295,8 @@ void CGameContext::OnConsoleInit()
+ 	Console()->Register("switch_open", "i[switch]", CFGFLAG_SERVER | CFGFLAG_GAME, ConSwitchOpen, this, "Whether a switch is deactivated by default (otherwise activated)");
+ 	Console()->Register("pause_game", "", CFGFLAG_SERVER, ConPause, this, "Pause/unpause game");
+ 	Console()->Register("change_map", "r[map]", CFGFLAG_SERVER | CFGFLAG_STORE, ConChangeMap, this, "Change map");
++	Console()->Register("warehouse_map", "s[sha256]", CFGFLAG_SERVER, ConWarehouseMap, this, "Prepare and change to a verified map warehouse entry");
++	Console()->Register("clear_map_searches", "", CFGFLAG_SERVER, ConClearMapSearches, this, "Clear all persisted map archive search collections");
+ 	Console()->Register("random_map", "?i[stars] ?i[max stars]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRandomMap, this, "Random map");
+ 	Console()->Register("random_unfinished_map", "?i[stars] ?i[max stars]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRandomUnfinishedMap, this, "Random unfinished map");
+ 	Console()->Register("restart", "?i[seconds]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRestart, this, "Restart in x seconds (0 = abort)");
+@@ -3977,6 +4314,7 @@ void CGameContext::OnConsoleInit()
  	Console()->Register("force_vote", "s[name] s[command] ?r[reason]", CFGFLAG_SERVER, ConForceVote, this, "Force a voting option");
  	Console()->Register("clear_votes", "", CFGFLAG_SERVER, ConClearVotes, this, "Clears the voting options");
  	Console()->Register("add_map_votes", "?s[directory]", CFGFLAG_SERVER, ConAddMapVotes, this, "Automatically adds voting options for all maps");
@@ -423,60 +606,89 @@ index e9a7f6f..ca8e0e4 100644
  	Console()->Register("vote", "r['yes'|'no']", CFGFLAG_SERVER, ConVote, this, "Force a vote to yes/no");
  	Console()->Register("votes", "?i[page]", CFGFLAG_SERVER, ConVotes, this, "Show all votes (page 0 by default, 20 entries per page)");
  	Console()->Register("dump_antibot", "", CFGFLAG_SERVER | CFGFLAG_STORE, ConDumpAntibot, this, "Dumps the antibot status");
-@@ -4272,6 +4456,8 @@ void CGameContext::OnInit(const void *pPersistentData)
+@@ -4099,6 +4437,7 @@ void CGameContext::RegisterChatCommands()
+ 	Console()->Register("save", "?r[code]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSave, this, "Save team with code r.");
+ 	Console()->Register("load", "?r[code]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConLoad, this, "Load with code r. /load to check your existing saves");
+ 	Console()->Register("map", "?r[map]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConMap, this, "Vote a map by name");
++	Console()->Register("search", "?r[patterns]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConMapSearch, this, "Search the historical map archive; supports *, ?, -exclude and --name");
+ 
+ 	Console()->Register("rankteam", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamRank, this, "Shows the team rank of player with name r (your team rank by default)");
+ 	Console()->Register("teamrank", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTeamRank, this, "Shows the team rank of player with name r (your team rank by default)");
+@@ -4272,6 +4611,11 @@ void CGameContext::OnInit(const void *pPersistentData)
  	LoadMapSettings();
  
  	m_pConfigManager->SetGameSettingsReadOnly(true);
 +	if(g_Config.m_SvMapVoteCatalog)
-+		PublishMapVoteCatalog();
++	{
++		if(!PublishMapVoteCatalog() && g_Config.m_SvMapWarehouseIndex[0])
++			Server()->SetErrorShutdown("map warehouse initialization failed");
++	}
  
  	m_MapBugs.Dump();
  
+@@ -4620,6 +4964,7 @@ bool CGameContext::OnMapChange(char *pNewMapName, int MapNameSize)
+ 
+ void CGameContext::OnShutdown(void *pPersistentData)
+ {
++	m_MapWarehouse.AbortPreparation();
+ 	CPersistentData *pPersistent = (CPersistentData *)pPersistentData;
+ 
+ 	if(pPersistent)
 diff --git a/src/game/server/gamecontext.h b/src/game/server/gamecontext.h
-index bc1ec17..fe70de8 100644
+index bc1ec17..e1493a8 100644
 --- a/src/game/server/gamecontext.h
 +++ b/src/game/server/gamecontext.h
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,8 @@
  
  #include "eventhandler.h"
  #include "gameworld.h"
 +#include "map_vote_catalog.h"
++#include "map_warehouse.h"
  #include "teehistorian.h"
  
  #include <base/types.h>
-@@ -167,6 +168,7 @@ class CGameContext : public IGameServer
+@@ -167,6 +169,10 @@ class CGameContext : public IGameServer
  	static void ConForceVote(IConsole::IResult *pResult, void *pUserData);
  	static void ConClearVotes(IConsole::IResult *pResult, void *pUserData);
  	static void ConAddMapVotes(IConsole::IResult *pResult, void *pUserData);
 +	static void ConAddMapCatalogVotes(IConsole::IResult *pResult, void *pUserData);
++	static void ConMapSearch(IConsole::IResult *pResult, void *pUserData);
++	static void ConWarehouseMap(IConsole::IResult *pResult, void *pUserData);
++	static void ConClearMapSearches(IConsole::IResult *pResult, void *pUserData);
  	static void ConVote(IConsole::IResult *pResult, void *pUserData);
  	static void ConVotes(IConsole::IResult *pResult, void *pUserData);
  	static void ConVoteNo(IConsole::IResult *pResult, void *pUserData);
-@@ -284,6 +286,7 @@ public:
+@@ -284,6 +290,10 @@ public:
  	CHeap *m_pVoteOptionHeap;
  	CVoteOptionServer *m_pVoteOptionFirst;
  	CVoteOptionServer *m_pVoteOptionLast;
 +	CMapVoteCatalog m_MapVoteCatalog;
++	CMapWarehouse m_MapWarehouse;
++	int m_LastMapWarehouseSearchTick = -1;
++	int64_t m_LastMapWarehouseProgressMessage = 0;
  
  	// helper functions
  	void CreateDamageInd(vec2 Pos, float AngleMod, int Amount, CClientMask Mask = CClientMask().set());
-@@ -329,6 +332,9 @@ public:
+@@ -329,6 +339,10 @@ public:
  
  	const CVoteOptionServer *GetVoteOption(int Index) const;
  	void ProgressVoteOptions(int ClientId);
 +	CMapVoteCatalog::SPageId MapVotePage(int ClientId) const;
 +	void NavigateMapVotes(int ClientId, CMapVoteCatalog::SPageId Page);
 +	bool PublishMapVoteCatalog();
++	void ProgressMapWarehouse();
  
  	//
  	void LoadMapSettings();
 diff --git a/src/game/server/map_vote_catalog.cpp b/src/game/server/map_vote_catalog.cpp
 new file mode 100644
-index 0000000..34efe84
+index 0000000..5361c56
 --- /dev/null
 +++ b/src/game/server/map_vote_catalog.cpp
-@@ -0,0 +1,453 @@
+@@ -0,0 +1,661 @@
 +#include "map_vote_catalog.h"
++
++#include "map_warehouse.h"
 +
 +#include <base/secure.h>
 +#include <base/str.h>
@@ -567,6 +779,28 @@ index 0000000..34efe84
 +		return Command.size() < VOTE_CMD_LENGTH ? Command : std::string{};
 +	}
 +
++	std::string WarehouseMapCommand(const std::string &Hash)
++	{
++		return "warehouse_map \"" + Hash + "\"";
++	}
++
++	std::string TruncateLabel(const std::string &Value, int MaxBytes)
++	{
++		if(static_cast<int>(Value.size()) <= MaxBytes)
++			return Value;
++		std::vector<char> vBuffer(MaxBytes + 1);
++		str_utf8_truncate(vBuffer.data(), static_cast<int>(vBuffer.size()), Value.c_str(), MaxBytes);
++		return vBuffer.data();
++	}
++
++	std::string FormatCount(int Value)
++	{
++		std::string Result = std::to_string(Value);
++		for(int Position = static_cast<int>(Result.size()) - 3; Position > 0; Position -= 3)
++			Result.insert(Position, ",");
++		return Result;
++	}
++
 +	void SetError(std::string *pError, const char *pMessage)
 +	{
 +		if(pError)
@@ -584,6 +818,11 @@ index 0000000..34efe84
 +	m_vDdracePage.clear();
 +	m_vGoresPage.clear();
 +	m_vOthersPage.clear();
++	m_vWarehousePage.clear();
++	m_vWarehouseGuidePage.clear();
++	m_vWarehouseCollections.clear();
++	m_WarehouseAliases = 0;
++	m_WarehouseUniqueMaps = 0;
 +}
 +
 +void CMapVoteCatalog::DisambiguateTypeDisplayNames(std::vector<SType> &vTypes)
@@ -611,12 +850,12 @@ index 0000000..34efe84
 +	}
 +}
 +
-+bool CMapVoteCatalog::Build(IStorage *pStorage, IConsole *pConsole, std::string *pError)
++bool CMapVoteCatalog::Build(IStorage *pStorage, IConsole *pConsole, const CMapWarehouse *pWarehouse, std::string *pError)
 +{
-+	return BuildFromStorageType(pStorage, IStorage::TYPE_ALL, pConsole, pError);
++	return BuildFromStorageType(pStorage, IStorage::TYPE_ALL, pConsole, pWarehouse, pError);
 +}
 +
-+bool CMapVoteCatalog::BuildFromStorageType(IStorage *pStorage, int StorageType, IConsole *pConsole, std::string *pError)
++bool CMapVoteCatalog::BuildFromStorageType(IStorage *pStorage, int StorageType, IConsole *pConsole, const CMapWarehouse *pWarehouse, std::string *pError)
 +{
 +	if(pError)
 +		pError->clear();
@@ -685,7 +924,12 @@ index 0000000..34efe84
 +		return false;
 +	}
 +
-+	if(!Candidate.BuildPages(pError))
++	if(pWarehouse && pWarehouse->Active())
++	{
++		Candidate.m_WarehouseAliases = pWarehouse->AliasCount();
++		Candidate.m_WarehouseUniqueMaps = pWarehouse->UniqueMapCount();
++	}
++	if(!Candidate.BuildWarehousePages(pWarehouse, pError) || !Candidate.BuildPages(pError))
 +		return false;
 +	Candidate.m_Active = true;
 +	*this = std::move(Candidate);
@@ -731,13 +975,21 @@ index 0000000..34efe84
 +		return Entry;
 +	};
 +
-+	m_vRootPage = {
++	m_vRootPage.clear();
++	if(m_WarehouseAliases > 0)
++	{
++		char aArchiveLabel[VOTE_DESC_LENGTH];
++		str_format(aArchiveLabel, sizeof(aArchiveLabel), "Search %s archive maps  ›", FormatCount(m_WarehouseAliases).c_str());
++		m_vRootPage.push_back(Navigation(aArchiveLabel, {EPage::WAREHOUSE, -1}));
++	}
++	const std::vector<SEntry> vCoreRoot = {
 +		Navigation("Browse DDRace maps  ›", {EPage::DDRACE_TYPES, -1}),
 +		Navigation("Browse Gores maps  ›", {EPage::GORES_TYPES, -1}),
 +		Navigation("Browse other maps  ›", {EPage::OTHERS, -1}),
 +		Random("★ Random DDRace map", ECategory::DDRACE, -1),
 +		Random("★ Random Gores map", ECategory::GORES, -1),
 +	};
++	m_vRootPage.insert(m_vRootPage.end(), vCoreRoot.begin(), vCoreRoot.end());
 +
 +	m_vDdracePage.push_back(Back("‹  Back to map categories", {EPage::ROOT, -1}));
 +	for(int TypeIndex = 0; TypeIndex < static_cast<int>(m_vDdraceTypes.size()); ++TypeIndex)
@@ -799,7 +1051,8 @@ index 0000000..34efe84
 +				return false;
 +		return true;
 +	};
-+	if(!ValidatePage(m_vRootPage) || !ValidatePage(m_vDdracePage) || !ValidatePage(m_vGoresPage) || !ValidatePage(m_vOthersPage))
++	if(!ValidatePage(m_vRootPage) || !ValidatePage(m_vDdracePage) || !ValidatePage(m_vGoresPage) || !ValidatePage(m_vOthersPage) ||
++		!ValidatePage(m_vWarehousePage) || !ValidatePage(m_vWarehouseGuidePage))
 +	{
 +		SetError(pError, "a map vote page exceeds protocol limits");
 +		return false;
@@ -816,6 +1069,164 @@ index 0000000..34efe84
 +			SetError(pError, "a Gores map vote page exceeds protocol limits");
 +			return false;
 +		}
++	for(const SWarehouseCollection &Collection : m_vWarehouseCollections)
++		for(const std::vector<SEntry> &vPage : Collection.m_vPages)
++			if(!ValidatePage(vPage))
++			{
++				SetError(pError, "an archive collection page exceeds protocol limits");
++				return false;
++			}
++	return true;
++}
++
++bool CMapVoteCatalog::BuildWarehousePages(const CMapWarehouse *pWarehouse, std::string *pError)
++{
++	if(!pWarehouse || !pWarehouse->Active())
++		return true;
++	auto Navigation = [](const std::string &Label, SPageId Target) {
++		SEntry Entry;
++		Entry.m_Kind = EOptionKind::FOLDER;
++		Entry.m_Description = Label;
++		Entry.m_TargetPage = Target;
++		return Entry;
++	};
++	auto Back = [](const char *pLabel, SPageId Target) {
++		SEntry Entry;
++		Entry.m_Kind = EOptionKind::BACK;
++		Entry.m_Description = pLabel;
++		Entry.m_TargetPage = Target;
++		return Entry;
++	};
++	auto Info = [](const std::string &Label, const std::string &Text) {
++		SEntry Entry;
++		Entry.m_Kind = EOptionKind::INFO;
++		Entry.m_Description = Label;
++		Entry.m_InfoText = Text;
++		return Entry;
++	};
++
++	m_vWarehousePage.push_back(Back("‹  Back to map categories", {EPage::ROOT, -1}));
++	m_vWarehousePage.push_back(Info("━━  Historical Map Archive  ━━", "Search 55,250 historical map names without unpacking the archive."));
++	char aCountLabel[VOTE_DESC_LENGTH];
++	str_format(aCountLabel, sizeof(aCountLabel), "%s names · %s unique maps", FormatCount(pWarehouse->AliasCount()).c_str(), FormatCount(pWarehouse->UniqueMapCount()).c_str());
++	m_vWarehousePage.push_back(Info(aCountLabel, "Duplicate historical names share one verified map file."));
++	m_vWarehousePage.push_back(Navigation("Search guide & syntax  ›", {EPage::WAREHOUSE_GUIDE, -1}));
++	if(pWarehouse->Collections().empty())
++		m_vWarehousePage.push_back(Info("No collections yet · type /search", "Example: /search *aip*race*"));
++
++	m_vWarehouseGuidePage = {
++		Back("‹  Back to the map archive", {EPage::WAREHOUSE, -1}),
++		Info("━━  /search Guide  ━━", "Type a /search command in chat, then open its collection here."),
++		Info("/search aip race · both, any order", "Find names containing both words, in any order."),
++		Info("/search *aip*race* · aip before race", "Find names with aip before race; * means any text."),
++		Info("* = any text · ? = one character", "Wildcards can appear anywhere inside a pattern."),
++		Info("-test · exclude matching names", "Example: /search race -test"),
++		Info("--name AIP Race · name the collection", "Example: /search aip race --name AIP Race"),
++		Info("No --name · create a clean automatic name", "Searches are saved and survive map changes and restarts."),
++	};
++
++	constexpr int MAPS_PER_PAGE = 44;
++	for(const CMapWarehouse::SCollection &WarehouseCollection : pWarehouse->Collections())
++	{
++		SWarehouseCollection Collection;
++		Collection.m_Id = WarehouseCollection.m_Id;
++		Collection.m_Name = WarehouseCollection.m_Name;
++		Collection.m_Query = WarehouseCollection.m_Query;
++		char aFolderSuffix[32];
++		str_format(aFolderSuffix, sizeof(aFolderSuffix), " · %d maps  ›", static_cast<int>(WarehouseCollection.m_vMapIndices.size()));
++		const std::string FolderLabel = TruncateLabel(Collection.m_Name, VOTE_DESC_LENGTH - str_length(aFolderSuffix) - 1) + aFolderSuffix;
++		m_vWarehousePage.push_back(Navigation(FolderLabel, {EPage::WAREHOUSE_COLLECTION, Collection.m_Id, 0}));
++
++		const int PageCount = (static_cast<int>(WarehouseCollection.m_vMapIndices.size()) + MAPS_PER_PAGE - 1) / MAPS_PER_PAGE;
++		Collection.m_vPages.resize(PageCount);
++		for(int PageIndex = 0; PageIndex < PageCount; ++PageIndex)
++		{
++			std::vector<SEntry> &vPage = Collection.m_vPages[PageIndex];
++			vPage.push_back(Back("‹  Back to archive collections", {EPage::WAREHOUSE, -1}));
++			const std::string Header = "━━  " + TruncateLabel(Collection.m_Name, 46) + "  ━━";
++			vPage.push_back(Info(Header, "Search: " + Collection.m_Query));
++			char aPageLabel[VOTE_DESC_LENGTH];
++			str_format(aPageLabel, sizeof(aPageLabel), "%d maps · page %d of %d", static_cast<int>(WarehouseCollection.m_vMapIndices.size()), PageIndex + 1, PageCount);
++			vPage.push_back(Info(aPageLabel, "Select a map to call a vote. It is extracted only if the vote passes."));
++			if(PageIndex > 0)
++				vPage.push_back(Back("‹  Previous page", {EPage::WAREHOUSE_COLLECTION, Collection.m_Id, PageIndex - 1}));
++			if(PageIndex + 1 < PageCount)
++				vPage.push_back(Navigation("Next page  ›", {EPage::WAREHOUSE_COLLECTION, Collection.m_Id, PageIndex + 1}));
++
++			const int Start = PageIndex * MAPS_PER_PAGE;
++			const int End = std::min(Start + MAPS_PER_PAGE, static_cast<int>(WarehouseCollection.m_vMapIndices.size()));
++			std::vector<const CMapWarehouse::SMap *> vpMaps;
++			std::vector<std::string> vNames;
++			vpMaps.reserve(End - Start);
++			vNames.reserve(End - Start);
++			for(int Index = Start; Index < End; ++Index)
++			{
++				const CMapWarehouse::SMap *pMap = pWarehouse->Map(WarehouseCollection.m_vMapIndices[Index]);
++				vpMaps.push_back(pMap);
++				vNames.push_back(pMap ? pMap->m_Name : "");
++			}
++			auto MapDescription = [&](const CMapWarehouse::SMap &Map, bool DuplicateName, int Disambiguator) {
++				const std::string Prefix = "• ";
++				const bool NeedsHash = DuplicateName || Map.m_Name.size() > static_cast<size_t>(VOTE_DESC_LENGTH - 1 - Prefix.size());
++				std::string Suffix = NeedsHash ? " · " + Map.m_Hash.substr(0, 8) : "";
++				if(Disambiguator > 0)
++					Suffix += " · #" + std::to_string(Disambiguator);
++				const int NameBytes = VOTE_DESC_LENGTH - 1 - static_cast<int>(Prefix.size() + Suffix.size());
++				return Prefix + TruncateLabel(Map.m_Name, std::max(NameBytes, 0)) + Suffix;
++			};
++			const int FirstMapOption = static_cast<int>(vPage.size());
++			for(int Index = 0; Index < static_cast<int>(vpMaps.size()); ++Index)
++			{
++				const CMapWarehouse::SMap *pMap = vpMaps[Index];
++				if(!pMap)
++				{
++					SetError(pError, "an archive collection references an unknown map");
++					return false;
++				}
++				const bool DuplicateName = std::count_if(vNames.begin(), vNames.end(), [&](const std::string &Name) {
++					return str_utf8_comp_nocase(Name.c_str(), pMap->m_Name.c_str()) == 0;
++				}) > 1;
++				SEntry Entry;
++				Entry.m_Kind = EOptionKind::MAP;
++				Entry.m_Description = MapDescription(*pMap, DuplicateName, 0);
++				Entry.m_Command = WarehouseMapCommand(pMap->m_Hash);
++				vPage.push_back(std::move(Entry));
++			}
++			std::vector<bool> vColliding(vpMaps.size(), false);
++			for(int Index = 0; Index < static_cast<int>(vpMaps.size()); ++Index)
++			{
++				for(int Other = Index + 1; Other < static_cast<int>(vpMaps.size()); ++Other)
++				{
++					if(str_utf8_comp_nocase(vPage[FirstMapOption + Index].m_Description.c_str(), vPage[FirstMapOption + Other].m_Description.c_str()) == 0)
++						vColliding[Index] = vColliding[Other] = true;
++				}
++			}
++			std::vector<std::string> vUsedDescriptions;
++			vUsedDescriptions.reserve(vpMaps.size());
++			for(int Index = 0; Index < static_cast<int>(vpMaps.size()); ++Index)
++				if(!vColliding[Index])
++					vUsedDescriptions.push_back(vPage[FirstMapOption + Index].m_Description);
++			for(int Index = 0; Index < static_cast<int>(vpMaps.size()); ++Index)
++			{
++				if(!vColliding[Index])
++					continue;
++				const bool DuplicateName = std::count_if(vNames.begin(), vNames.end(), [&](const std::string &Name) {
++					return str_utf8_comp_nocase(Name.c_str(), vpMaps[Index]->m_Name.c_str()) == 0;
++				}) > 1;
++				int Disambiguator = Index + 1;
++				std::string Description;
++				do
++				{
++					Description = MapDescription(*vpMaps[Index], DuplicateName, Disambiguator++);
++				} while(std::any_of(vUsedDescriptions.begin(), vUsedDescriptions.end(), [&](const std::string &Used) {
++					return str_utf8_comp_nocase(Used.c_str(), Description.c_str()) == 0;
++				}));
++				vPage[FirstMapOption + Index].m_Description = Description;
++				vUsedDescriptions.push_back(std::move(Description));
++			}
++		}
++		m_vWarehouseCollections.push_back(std::move(Collection));
++	}
 +	return true;
 +}
 +
@@ -836,6 +1247,13 @@ index 0000000..34efe84
 +		return Page.m_Type >= 0 && Page.m_Type < static_cast<int>(m_vDdraceTypes.size()) ? &m_vDdraceTypes[Page.m_Type].m_vPage : nullptr;
 +	case EPage::GORES_TYPE:
 +		return Page.m_Type >= 0 && Page.m_Type < static_cast<int>(m_vGoresTypes.size()) ? &m_vGoresTypes[Page.m_Type].m_vPage : nullptr;
++	case EPage::WAREHOUSE: return &m_vWarehousePage;
++	case EPage::WAREHOUSE_GUIDE: return &m_vWarehouseGuidePage;
++	case EPage::WAREHOUSE_COLLECTION:
++		for(const SWarehouseCollection &Collection : m_vWarehouseCollections)
++			if(Collection.m_Id == Page.m_Type)
++				return Page.m_SubPage >= 0 && Page.m_SubPage < static_cast<int>(Collection.m_vPages.size()) ? &Collection.m_vPages[Page.m_SubPage] : nullptr;
++		return nullptr;
 +	}
 +	return nullptr;
 +}
@@ -931,10 +1349,10 @@ index 0000000..34efe84
 +}
 diff --git a/src/game/server/map_vote_catalog.h b/src/game/server/map_vote_catalog.h
 new file mode 100644
-index 0000000..84e7ba8
+index 0000000..7463d88
 --- /dev/null
 +++ b/src/game/server/map_vote_catalog.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,119 @@
 +#ifndef GAME_SERVER_MAP_VOTE_CATALOG_H
 +#define GAME_SERVER_MAP_VOTE_CATALOG_H
 +
@@ -943,6 +1361,7 @@ index 0000000..84e7ba8
 +
 +class IConsole;
 +class IStorage;
++class CMapWarehouse;
 +
 +class CMapVoteCatalog
 +{
@@ -952,6 +1371,7 @@ index 0000000..84e7ba8
 +		NORMAL = 0,
 +		FOLDER,
 +		BACK,
++		INFO,
 +		RANDOM,
 +		MAP,
 +	};
@@ -964,14 +1384,18 @@ index 0000000..84e7ba8
 +		OTHERS,
 +		DDRACE_TYPE,
 +		GORES_TYPE,
++		WAREHOUSE,
++		WAREHOUSE_GUIDE,
++		WAREHOUSE_COLLECTION,
 +	};
 +
 +	struct SPageId
 +	{
 +		EPage m_Page = EPage::ROOT;
 +		int m_Type = -1;
++		int m_SubPage = 0;
 +
-+		bool operator==(const SPageId &Other) const { return m_Page == Other.m_Page && m_Type == Other.m_Type; }
++		bool operator==(const SPageId &Other) const { return m_Page == Other.m_Page && m_Type == Other.m_Type && m_SubPage == Other.m_SubPage; }
 +	};
 +
 +	struct SEntry
@@ -979,16 +1403,18 @@ index 0000000..84e7ba8
 +		EOptionKind m_Kind = EOptionKind::NORMAL;
 +		std::string m_Description{};
 +		std::string m_Command{};
++		std::string m_InfoText{};
 +		SPageId m_TargetPage{};
 +		int m_RandomCategory = -1;
 +		int m_RandomType = -1;
 +	};
 +
-+	bool Build(IStorage *pStorage, IConsole *pConsole, std::string *pError = nullptr);
-+	bool BuildFromStorageType(IStorage *pStorage, int StorageType, IConsole *pConsole, std::string *pError = nullptr);
++	bool Build(IStorage *pStorage, IConsole *pConsole, const CMapWarehouse *pWarehouse = nullptr, std::string *pError = nullptr);
++	bool BuildFromStorageType(IStorage *pStorage, int StorageType, IConsole *pConsole, const CMapWarehouse *pWarehouse = nullptr, std::string *pError = nullptr);
 +	void Clear();
 +	bool Active() const { return m_Active; }
 +	static bool IsNavigation(EOptionKind Kind) { return Kind == EOptionKind::FOLDER || Kind == EOptionKind::BACK; }
++	static bool IsInformational(EOptionKind Kind) { return Kind == EOptionKind::INFO; }
 +	int OptionCount(SPageId Page) const;
 +	const SEntry *OptionAt(SPageId Page, int Index) const;
 +	const SEntry *Find(SPageId Page, const char *pDescription) const;
@@ -1016,6 +1442,14 @@ index 0000000..84e7ba8
 +		std::vector<SEntry> m_vPage{};
 +	};
 +
++	struct SWarehouseCollection
++	{
++		int m_Id = -1;
++		std::string m_Name{};
++		std::string m_Query{};
++		std::vector<std::vector<SEntry>> m_vPages{};
++	};
++
 +	bool m_Active = false;
 +	std::vector<SType> m_vDdraceTypes{};
 +	std::vector<SType> m_vGoresTypes{};
@@ -1024,48 +1458,1285 @@ index 0000000..84e7ba8
 +	std::vector<SEntry> m_vDdracePage{};
 +	std::vector<SEntry> m_vGoresPage{};
 +	std::vector<SEntry> m_vOthersPage{};
++	std::vector<SEntry> m_vWarehousePage{};
++	std::vector<SEntry> m_vWarehouseGuidePage{};
++	std::vector<SWarehouseCollection> m_vWarehouseCollections{};
++	int m_WarehouseAliases = 0;
++	int m_WarehouseUniqueMaps = 0;
 +
 +	const std::vector<SEntry> *PageEntries(SPageId Page) const;
 +	const std::vector<SType> &Types(ECategory Category) const;
 +	static void DisambiguateTypeDisplayNames(std::vector<SType> &vTypes);
 +	bool BuildPages(std::string *pError);
++	bool BuildWarehousePages(const CMapWarehouse *pWarehouse, std::string *pError);
 +};
 +
 +#endif // GAME_SERVER_MAP_VOTE_CATALOG_H
+diff --git a/src/game/server/map_warehouse.cpp b/src/game/server/map_warehouse.cpp
+new file mode 100644
+index 0000000..e2b25e0
+--- /dev/null
++++ b/src/game/server/map_warehouse.cpp
+@@ -0,0 +1,1109 @@
++#include "map_warehouse.h"
++
++#include <base/fs.h>
++#include <base/hash.h>
++#include <base/hash_ctxt.h>
++#include <base/io.h>
++#include <base/process.h>
++#include <base/str.h>
++#include <base/time.h>
++
++#include <engine/console.h>
++#include <engine/engine.h>
++#include <engine/shared/jobs.h>
++#include <engine/storage.h>
++
++#include <algorithm>
++#include <cctype>
++#include <chrono>
++#include <cstdlib>
++#include <filesystem>
++#include <limits>
++#include <set>
++#include <thread>
++#include <unordered_map>
++#include <unordered_set>
++#include <utility>
++
++namespace
++{
++	constexpr const char *INDEX_HEADER = "TW_MAP_WAREHOUSE_INDEX\t1";
++	constexpr const char *STATE_HEADER = "TW_MAP_WAREHOUSE_COLLECTIONS\t1";
++
++	void SetError(std::string *pError, const std::string &Message)
++	{
++		if(pError)
++			*pError = Message;
++	}
++
++	bool IsHexHash(const std::string &Value)
++	{
++		return Value.size() == 64 && std::all_of(Value.begin(), Value.end(), [](unsigned char Ch) {
++			return (Ch >= '0' && Ch <= '9') || (Ch >= 'a' && Ch <= 'f');
++		});
++	}
++
++	std::vector<std::string> Split(const std::string &Value, char Separator)
++	{
++		std::vector<std::string> vResult;
++		size_t Start = 0;
++		while(Start <= Value.size())
++		{
++			const size_t End = Value.find(Separator, Start);
++			vResult.push_back(Value.substr(Start, End == std::string::npos ? std::string::npos : End - Start));
++			if(End == std::string::npos)
++				break;
++			Start = End + 1;
++		}
++		return vResult;
++	}
++
++	bool PercentDecode(const std::string &Encoded, std::string *pDecoded)
++	{
++		pDecoded->clear();
++		pDecoded->reserve(Encoded.size());
++		auto HexValue = [](char Ch) {
++			if(Ch >= '0' && Ch <= '9')
++				return Ch - '0';
++			if(Ch >= 'A' && Ch <= 'F')
++				return Ch - 'A' + 10;
++			if(Ch >= 'a' && Ch <= 'f')
++				return Ch - 'a' + 10;
++			return -1;
++		};
++		for(size_t Index = 0; Index < Encoded.size(); ++Index)
++		{
++			if(Encoded[Index] != '%')
++			{
++				pDecoded->push_back(Encoded[Index]);
++				continue;
++			}
++			if(Index + 2 >= Encoded.size())
++				return false;
++			const int High = HexValue(Encoded[Index + 1]);
++			const int Low = HexValue(Encoded[Index + 2]);
++			if(High < 0 || Low < 0)
++				return false;
++			const char Decoded = static_cast<char>((High << 4) | Low);
++			if(Decoded == '\0' || Decoded == '\r' || Decoded == '\n' || Decoded == '\t')
++				return false;
++			pDecoded->push_back(Decoded);
++			Index += 2;
++		}
++		return true;
++	}
++
++	std::string PercentEncode(const std::string &Value)
++	{
++		static constexpr char HEX[] = "0123456789ABCDEF";
++		std::string Result;
++		for(const unsigned char Ch : Value)
++		{
++			if((Ch >= 'a' && Ch <= 'z') || (Ch >= 'A' && Ch <= 'Z') || (Ch >= '0' && Ch <= '9') || Ch == '-' || Ch == '.' || Ch == '_' || Ch == '~')
++				Result.push_back(static_cast<char>(Ch));
++			else
++			{
++				Result.push_back('%');
++				Result.push_back(HEX[Ch >> 4]);
++				Result.push_back(HEX[Ch & 0xf]);
++			}
++		}
++		return Result;
++	}
++
++	std::string Normalize(const std::string &Value)
++	{
++		std::vector<char> vResult(Value.size() * 4 + 1);
++		str_utf8_tolower(Value.c_str(), vResult.data(), vResult.size());
++		return vResult.data();
++	}
++
++	std::string Trim(std::string Value)
++	{
++		while(!Value.empty() && std::isspace(static_cast<unsigned char>(Value.front())))
++			Value.erase(Value.begin());
++		while(!Value.empty() && std::isspace(static_cast<unsigned char>(Value.back())))
++			Value.pop_back();
++		return Value;
++	}
++
++	std::string Utf8Truncate(const std::string &Value, int MaxBytes)
++	{
++		if(static_cast<int>(Value.size()) <= MaxBytes)
++			return Value;
++		std::vector<char> vBuffer(MaxBytes + 1);
++		str_utf8_truncate(vBuffer.data(), static_cast<int>(vBuffer.size()), Value.c_str(), MaxBytes);
++		return vBuffer.data();
++	}
++
++	bool GlobMatch(const std::string &Pattern, const std::string &Value)
++	{
++		const char *pPattern = Pattern.c_str();
++		const char *pValue = Value.c_str();
++		const char *pAfterStar = nullptr;
++		const char *pRetry = nullptr;
++		while(*pValue)
++		{
++			const char *pNextPattern = pPattern;
++			const char *pNextValue = pValue;
++			const int PatternCodepoint = str_utf8_decode(&pNextPattern);
++			const int ValueCodepoint = str_utf8_decode(&pNextValue);
++			if(PatternCodepoint == '?' || PatternCodepoint == ValueCodepoint)
++			{
++				pPattern = pNextPattern;
++				pValue = pNextValue;
++			}
++			else if(PatternCodepoint == '*')
++			{
++				pAfterStar = pNextPattern;
++				pPattern = pNextPattern;
++				pRetry = pValue;
++			}
++			else if(pAfterStar)
++			{
++				if(str_utf8_decode(&pRetry) <= 0)
++					return false;
++				pPattern = pAfterStar;
++				pValue = pRetry;
++			}
++			else
++				return false;
++		}
++		while(*pPattern)
++			if(str_utf8_decode(&pPattern) != '*')
++				return false;
++		return true;
++	}
++
++	struct SParsedSearch
++	{
++		std::vector<std::string> m_vPositive;
++		std::vector<std::string> m_vNegative;
++		std::string m_Name;
++		std::string m_CanonicalQuery;
++		bool m_ExplicitName = false;
++	};
++
++	bool Tokenize(const std::string &Input, std::vector<std::string> *pTokens, std::string *pError)
++	{
++		std::string Current;
++		bool Quoted = false;
++		bool Escaped = false;
++		for(char Ch : Input)
++		{
++			if(Escaped)
++			{
++				Current.push_back(Ch);
++				Escaped = false;
++			}
++			else if(Ch == '\\')
++				Escaped = true;
++			else if(Ch == '"')
++				Quoted = !Quoted;
++			else if(!Quoted && std::isspace(static_cast<unsigned char>(Ch)))
++			{
++				if(!Current.empty())
++				{
++					pTokens->push_back(Current);
++					Current.clear();
++				}
++			}
++			else
++				Current.push_back(Ch);
++		}
++		if(Escaped)
++			Current.push_back('\\');
++		if(Quoted)
++		{
++			SetError(pError, "A quote is not closed");
++			return false;
++		}
++		if(!Current.empty())
++			pTokens->push_back(Current);
++		return true;
++	}
++
++	bool ParseSearch(const char *pInput, SParsedSearch *pParsed, std::string *pError)
++	{
++		std::string Input = Trim(pInput ? pInput : "");
++		if(Input.empty())
++		{
++			SetError(pError, "Add one or more words after /search");
++			return false;
++		}
++		if(Input.size() > 180)
++		{
++			SetError(pError, "Searches are limited to 180 characters");
++			return false;
++		}
++		if(!str_utf8_check(Input.c_str()))
++		{
++			SetError(pError, "Search text must be valid UTF-8");
++			return false;
++		}
++
++		bool Quoted = false;
++		bool Escaped = false;
++		size_t NameMarker = std::string::npos;
++		for(size_t Index = 0; Index + 6 <= Input.size(); ++Index)
++		{
++			if(Escaped)
++			{
++				Escaped = false;
++				continue;
++			}
++			if(Input[Index] == '\\')
++			{
++				Escaped = true;
++				continue;
++			}
++			if(Input[Index] == '"')
++				Quoted = !Quoted;
++			if(!Quoted && (Index == 0 || std::isspace(static_cast<unsigned char>(Input[Index - 1]))) && Input.compare(Index, 6, "--name") == 0 && (Index + 6 == Input.size() || Input[Index + 6] == '=' || std::isspace(static_cast<unsigned char>(Input[Index + 6]))))
++			{
++				NameMarker = Index;
++				break;
++			}
++		}
++		std::string Query = NameMarker == std::string::npos ? Input : Trim(Input.substr(0, NameMarker));
++		if(NameMarker != std::string::npos)
++		{
++			pParsed->m_ExplicitName = true;
++			size_t NameStart = NameMarker + 6;
++			if(NameStart < Input.size() && Input[NameStart] == '=')
++				++NameStart;
++			pParsed->m_Name = Trim(Input.substr(NameStart));
++			if(pParsed->m_Name.size() >= 2 && pParsed->m_Name.front() == '"' && pParsed->m_Name.back() == '"')
++				pParsed->m_Name = pParsed->m_Name.substr(1, pParsed->m_Name.size() - 2);
++			pParsed->m_Name = Trim(pParsed->m_Name);
++			if(pParsed->m_Name.empty())
++			{
++				SetError(pError, "Write a collection name after --name");
++				return false;
++			}
++			if(!str_utf8_check(pParsed->m_Name.c_str()) || pParsed->m_Name.size() > 40 || pParsed->m_Name.find_first_of("/\\\t\r\n") != std::string::npos)
++			{
++				SetError(pError, "Collection names must be readable and at most 40 bytes");
++				return false;
++			}
++		}
++
++		std::vector<std::string> vTokens;
++		if(!Tokenize(Query, &vTokens, pError))
++			return false;
++		int PositiveLiteralCharacters = 0;
++		for(std::string Token : vTokens)
++		{
++			bool Negative = Token.size() > 1 && Token.front() == '-';
++			if(Negative)
++				Token.erase(Token.begin());
++			int TokenLiteralCharacters = 0;
++			const char *pCursor = Token.c_str();
++			while(*pCursor)
++			{
++				const int Codepoint = str_utf8_decode(&pCursor);
++				if(Codepoint != '*' && Codepoint != '?')
++					++TokenLiteralCharacters;
++			}
++			if(!Negative)
++				PositiveLiteralCharacters += TokenLiteralCharacters;
++			if(Token.find_first_of("*?") == std::string::npos)
++				Token = "*" + Token + "*";
++			Token = Normalize(Token);
++			(Negative ? pParsed->m_vNegative : pParsed->m_vPositive).push_back(std::move(Token));
++		}
++		if(pParsed->m_vPositive.empty())
++		{
++			SetError(pError, "A search needs at least one included word or pattern");
++			return false;
++		}
++		if(pParsed->m_vPositive.size() > 8 || pParsed->m_vNegative.size() > 8)
++		{
++			SetError(pError, "Use at most eight included and eight excluded patterns");
++			return false;
++		}
++		if(PositiveLiteralCharacters < 2)
++		{
++			SetError(pError, "Add at least two letters so the search is not too broad");
++			return false;
++		}
++
++		pParsed->m_CanonicalQuery = Query;
++		if(pParsed->m_Name.empty())
++		{
++			std::string Generated;
++			auto AddNamePiece = [&](std::string Piece) {
++				Piece = Trim(std::move(Piece));
++				if(Piece.empty())
++					return;
++				const bool ShortAsciiWord = Piece.size() <= 3 && std::all_of(Piece.begin(), Piece.end(), [](unsigned char Ch) {
++					return Ch < 128 && std::isalnum(Ch);
++				});
++				if(ShortAsciiWord)
++					std::transform(Piece.begin(), Piece.end(), Piece.begin(), [](unsigned char Ch) { return static_cast<char>(std::toupper(Ch)); });
++				else if(Piece[0] >= 'a' && Piece[0] <= 'z')
++					Piece[0] = static_cast<char>(std::toupper(Piece[0]));
++				if(!Generated.empty())
++					Generated += " · ";
++				Generated += Piece;
++			};
++			for(const std::string &Token : vTokens)
++			{
++				if(Token.size() > 1 && Token.front() == '-')
++					continue;
++				std::string Piece;
++				for(char Ch : Token)
++				{
++					if(Ch == '*' || Ch == '?' || Ch == '_' || Ch == '-')
++					{
++						AddNamePiece(std::move(Piece));
++						Piece.clear();
++					}
++					else
++						Piece.push_back(Ch);
++				}
++				AddNamePiece(std::move(Piece));
++			}
++			pParsed->m_Name = Utf8Truncate(Generated.empty() ? "Map search" : Generated, 40);
++			if(!pParsed->m_Name.empty() && pParsed->m_Name[0] >= 'a' && pParsed->m_Name[0] <= 'z')
++				pParsed->m_Name[0] = static_cast<char>(std::toupper(pParsed->m_Name[0]));
++		}
++		return true;
++	}
++
++	bool CalculateSha256(const char *pFilename, SHA256_DIGEST *pDigest)
++	{
++		IOHANDLE File = io_open(pFilename, IOFLAG_READ);
++		if(!File)
++			return false;
++		SHA256_CTX Context;
++		sha256_init(&Context);
++		unsigned char aBuffer[64 * 1024];
++		while(true)
++		{
++			const unsigned Bytes = io_read(File, aBuffer, sizeof(aBuffer));
++			if(Bytes == 0)
++				break;
++			sha256_update(&Context, aBuffer, Bytes);
++		}
++		io_close(File);
++		*pDigest = sha256_finish(&Context);
++		return true;
++	}
++
++	bool CopyFile(const char *pSource, const char *pDestination)
++	{
++		IOHANDLE Source = io_open(pSource, IOFLAG_READ);
++		if(!Source)
++			return false;
++		IOHANDLE Destination = io_open(pDestination, IOFLAG_WRITE);
++		if(!Destination)
++		{
++			io_close(Source);
++			return false;
++		}
++		bool Success = true;
++		unsigned char aBuffer[64 * 1024];
++		while(true)
++		{
++			const unsigned Bytes = io_read(Source, aBuffer, sizeof(aBuffer));
++			if(Bytes == 0)
++				break;
++			if(io_write(Destination, aBuffer, Bytes) != Bytes)
++			{
++				Success = false;
++				break;
++			}
++		}
++		Success = io_sync(Destination) == 0 && Success;
++		io_close(Destination);
++		io_close(Source);
++		return Success;
++	}
++
++	void TouchCacheFile(const std::string &Path)
++	{
++		std::error_code Error;
++		std::filesystem::last_write_time(Path, std::filesystem::file_time_type::clock::now(), Error);
++	}
++
++	std::string CacheSlug(const std::string &Name)
++	{
++		std::string Result;
++		bool LastDash = false;
++		for(unsigned char Ch : Name)
++		{
++			char Out = '-';
++			if((Ch >= 'a' && Ch <= 'z') || (Ch >= 'A' && Ch <= 'Z') || (Ch >= '0' && Ch <= '9'))
++				Out = static_cast<char>(Ch);
++			else if(Ch == '_' || Ch == '-')
++				Out = static_cast<char>(Ch);
++			if(Out == '-')
++			{
++				if(LastDash || Result.empty())
++					continue;
++				LastDash = true;
++			}
++			else
++				LastDash = false;
++			Result.push_back(Out);
++			if(Result.size() == 32)
++				break;
++		}
++		while(!Result.empty() && Result.back() == '-')
++			Result.pop_back();
++		return Result.empty() ? "map" : Result;
++	}
++
++	struct SCacheFile
++	{
++		std::string m_Path;
++		int64_t m_Size = 0;
++		time_t m_Modified = 0;
++	};
++
++	struct SCacheScan
++	{
++		std::string m_Directory;
++		std::vector<SCacheFile> m_vFiles;
++	};
++
++	int CacheScan(const CFsFileInfo *pInfo, int IsDir, int DirType, void *pUser)
++	{
++		(void)DirType;
++		if(IsDir || !pInfo || !str_endswith(pInfo->m_pName, ".map"))
++			return 0;
++		const char *pHashSeparator = str_rchr(pInfo->m_pName, '-');
++		if(!pHashSeparator || str_length(pHashSeparator + 1) != 68)
++			return 0;
++		std::string HashWithExtension = pHashSeparator + 1;
++		HashWithExtension.resize(64);
++		if(!IsHexHash(HashWithExtension))
++			return 0;
++		auto *pScan = static_cast<SCacheScan *>(pUser);
++		SCacheFile File;
++		File.m_Path = pScan->m_Directory + "/" + pInfo->m_pName;
++		IOHANDLE Handle = io_open(File.m_Path.c_str(), IOFLAG_READ);
++		if(!Handle)
++			return 0;
++		File.m_Size = io_length(Handle);
++		io_close(Handle);
++		if(File.m_Size < 0)
++			return 0;
++		File.m_Modified = pInfo->m_TimeModified;
++		pScan->m_vFiles.push_back(std::move(File));
++		return 0;
++	}
++
++	class CMapExtractJob final : public IJob
++	{
++		std::string m_ArchivePath;
++		std::string m_DeltaDirectory;
++		std::string m_ExtractorPath;
++		std::string m_CacheDirectory;
++		std::string m_CacheMapPrefix;
++		std::string m_CurrentMapPath;
++		CMapWarehouse::SMap m_Map;
++		int64_t m_MaxCacheBytes;
++		int m_MaxCacheMaps;
++
++		bool m_Success = false;
++		std::string m_ResultMapPath;
++		std::string m_Error;
++
++		void Fail(const std::string &Error)
++		{
++			m_Error = Error;
++			m_Success = false;
++		}
++
++		void Run() override
++		{
++			const std::string CacheName = CacheSlug(m_Map.m_Name) + "--" + m_Map.m_Hash + ".map";
++			const std::string FinalPath = m_CacheDirectory + "/" + CacheName;
++			m_ResultMapPath = m_CacheMapPrefix + "/" + CacheName.substr(0, CacheName.size() - 4);
++
++			SHA256_DIGEST Expected;
++			if(sha256_from_str(&Expected, m_Map.m_Hash.c_str()) != 0)
++			{
++				Fail("invalid expected map hash");
++				return;
++			}
++			SHA256_DIGEST Existing;
++			if(fs_is_file(FinalPath.c_str()))
++			{
++				if(CalculateSha256(FinalPath.c_str(), &Existing) && Existing == Expected)
++				{
++					TouchCacheFile(FinalPath);
++					m_Success = true;
++					return;
++				}
++				if(fs_remove(FinalPath.c_str()) != 0)
++				{
++					Fail("could not replace an invalid cached map");
++					return;
++				}
++			}
++
++			if(m_Map.m_Size > static_cast<uint64_t>(m_MaxCacheBytes))
++			{
++				Fail("map is larger than the configured cache limit");
++				return;
++			}
++			if(fs_makedir_rec_for(FinalPath.c_str()) != 0 && !fs_is_dir(m_CacheDirectory.c_str()))
++			{
++				Fail("could not create the map cache directory");
++				return;
++			}
++
++			char aNonce[64];
++			str_format(aNonce, sizeof(aNonce), "%d-%lld", process_id(), static_cast<long long>(time_get()));
++			const std::string TemporaryDirectory = m_CacheDirectory + "/.extract-" + m_Map.m_Hash + "-" + aNonce;
++			if(fs_makedir(TemporaryDirectory.c_str()) != 0)
++			{
++				Fail("could not create a private extraction directory");
++				return;
++			}
++			const std::string ExtractedPath = TemporaryDirectory + "/" + m_Map.m_SourcePath;
++
++			bool Extracted = false;
++			if(m_Map.m_SourceKind == 'A')
++			{
++				const std::string OutputArgument = "-o" + TemporaryDirectory;
++				const char *apArguments[] = {"e", "-bd", "-bb0", "-y", "-mmt=2", OutputArgument.c_str(), m_ArchivePath.c_str(), "--", m_Map.m_SourcePath.c_str()};
++				PROCESS Process = process_execute(m_ExtractorPath.c_str(), EShellExecuteWindowState::BACKGROUND, apArguments, std::size(apArguments));
++				if(Process != INVALID_PROCESS)
++				{
++					while(process_is_alive(Process))
++					{
++						if(State() == STATE_ABORTED)
++						{
++							process_kill(Process);
++							break;
++						}
++						std::this_thread::sleep_for(std::chrono::milliseconds(50));
++					}
++					Extracted = State() != STATE_ABORTED;
++				}
++			}
++			else if(m_Map.m_SourceKind == 'D')
++			{
++				const std::string Source = m_DeltaDirectory + "/" + m_Map.m_SourcePath;
++				Extracted = CopyFile(Source.c_str(), ExtractedPath.c_str());
++			}
++
++			SHA256_DIGEST Actual;
++			if(!Extracted || !CalculateSha256(ExtractedPath.c_str(), &Actual) || Actual != Expected)
++			{
++				(void)fs_remove(ExtractedPath.c_str());
++				(void)fs_removedir(TemporaryDirectory.c_str());
++				if(State() != STATE_ABORTED)
++					Fail("archive extraction did not produce the verified map");
++				return;
++			}
++
++			SCacheScan Scan;
++			Scan.m_Directory = m_CacheDirectory;
++			fs_listdir_fileinfo(m_CacheDirectory.c_str(), CacheScan, 0, &Scan);
++			std::sort(Scan.m_vFiles.begin(), Scan.m_vFiles.end(), [](const SCacheFile &Left, const SCacheFile &Right) {
++				return std::tie(Left.m_Modified, Left.m_Path) < std::tie(Right.m_Modified, Right.m_Path);
++			});
++			int64_t CacheBytes = 0;
++			for(const SCacheFile &File : Scan.m_vFiles)
++				CacheBytes += File.m_Size;
++			int CacheMaps = static_cast<int>(Scan.m_vFiles.size());
++			for(const SCacheFile &File : Scan.m_vFiles)
++			{
++				if(CacheMaps + 1 <= m_MaxCacheMaps && CacheBytes + static_cast<int64_t>(m_Map.m_Size) <= m_MaxCacheBytes)
++					break;
++				if(File.m_Path == FinalPath || File.m_Path == m_CurrentMapPath)
++					continue;
++				if(fs_remove(File.m_Path.c_str()) == 0)
++				{
++					--CacheMaps;
++					CacheBytes -= File.m_Size;
++				}
++			}
++			if(CacheMaps + 1 > m_MaxCacheMaps || CacheBytes + static_cast<int64_t>(m_Map.m_Size) > m_MaxCacheBytes)
++			{
++				(void)fs_remove(ExtractedPath.c_str());
++				(void)fs_removedir(TemporaryDirectory.c_str());
++				Fail("the bounded map cache is full while the current map is protected");
++				return;
++			}
++			(void)fs_remove(FinalPath.c_str());
++			if(fs_rename(ExtractedPath.c_str(), FinalPath.c_str()) != 0)
++			{
++				(void)fs_remove(ExtractedPath.c_str());
++				(void)fs_removedir(TemporaryDirectory.c_str());
++				Fail("could not publish the verified map into the cache");
++				return;
++			}
++			(void)fs_removedir(TemporaryDirectory.c_str());
++			TouchCacheFile(FinalPath);
++			m_Success = true;
++		}
++
++	public:
++		CMapExtractJob(const CMapWarehouse::SMap &Map, std::string ArchivePath, std::string DeltaDirectory, std::string ExtractorPath, std::string CacheDirectory, std::string CacheMapPrefix, int64_t MaxCacheBytes, int MaxCacheMaps, std::string CurrentMapPath) :
++			m_ArchivePath(std::move(ArchivePath)),
++			m_DeltaDirectory(std::move(DeltaDirectory)),
++			m_ExtractorPath(std::move(ExtractorPath)),
++			m_CacheDirectory(std::move(CacheDirectory)),
++			m_CacheMapPrefix(std::move(CacheMapPrefix)),
++			m_CurrentMapPath(std::move(CurrentMapPath)),
++			m_Map(Map),
++			m_MaxCacheBytes(MaxCacheBytes),
++			m_MaxCacheMaps(MaxCacheMaps)
++		{
++			Abortable(true);
++		}
++
++		bool Success() const { return m_Success; }
++		const std::string &ResultMapPath() const { return m_ResultMapPath; }
++		const std::string &Error() const { return m_Error; }
++	};
++} // namespace
++
++CMapWarehouse::CMapWarehouse() = default;
++
++CMapWarehouse::~CMapWarehouse()
++{
++	AbortPreparation();
++}
++
++const CMapWarehouse::SMap *CMapWarehouse::Map(int Index) const
++{
++	return Index >= 0 && Index < static_cast<int>(m_vMaps.size()) ? &m_vMaps[Index] : nullptr;
++}
++
++const CMapWarehouse::SCollection *CMapWarehouse::CollectionById(int Id) const
++{
++	for(const SCollection &Collection : m_vCollections)
++		if(Collection.m_Id == Id)
++			return &Collection;
++	return nullptr;
++}
++
++const CMapWarehouse::SMap *CMapWarehouse::CanonicalMapByHash(const char *pHash) const
++{
++	for(const SMap &MapValue : m_vMaps)
++		if(MapValue.m_Hash == pHash)
++			return &MapValue;
++	return nullptr;
++}
++
++bool CMapWarehouse::LoadIndex(IStorage *pStorage, const char *pIndexPath, std::string *pError)
++{
++	char *pData = pStorage->ReadFileStr(pIndexPath, IStorage::TYPE_ALL_OR_ABSOLUTE);
++	if(!pData)
++	{
++		SetError(pError, "warehouse index is unreadable");
++		return false;
++	}
++	std::string Data(pData);
++	free(pData);
++	std::vector<std::string> vLines = Split(Data, '\n');
++	if(vLines.empty() || vLines[0] != INDEX_HEADER)
++	{
++		SetError(pError, "warehouse index has an unsupported header");
++		return false;
++	}
++
++	int DeclaredMaps = -1;
++	int DeclaredUnique = -1;
++	std::string ArchiveSha;
++	std::string AuthorityListingSha;
++	std::string MirrorListingSha;
++	size_t LineIndex = 1;
++	for(; LineIndex < vLines.size() && !vLines[LineIndex].empty(); ++LineIndex)
++	{
++		const std::vector<std::string> vFields = Split(vLines[LineIndex], '\t');
++		if(vFields.size() != 2)
++		{
++			SetError(pError, "warehouse index metadata is malformed");
++			return false;
++		}
++		if(vFields[0] == "archive_sha256")
++			ArchiveSha = vFields[1];
++		else if(vFields[0] == "authority_listing_sha256")
++			AuthorityListingSha = vFields[1];
++		else if(vFields[0] == "mirror_listing_sha256")
++			MirrorListingSha = vFields[1];
++		else if(vFields[0] == "map_entries")
++			DeclaredMaps = str_toint(vFields[1].c_str());
++		else if(vFields[0] == "unique_content")
++			DeclaredUnique = str_toint(vFields[1].c_str());
++	}
++	if(!IsHexHash(ArchiveSha) || !IsHexHash(AuthorityListingSha) || !IsHexHash(MirrorListingSha) || DeclaredMaps <= 0 || DeclaredUnique <= 0)
++	{
++		SetError(pError, "warehouse index metadata is incomplete");
++		return false;
++	}
++
++	std::vector<SMap> vMaps;
++	vMaps.reserve(DeclaredMaps);
++	std::unordered_map<std::string, uint64_t> ContentSizes;
++	for(++LineIndex; LineIndex < vLines.size(); ++LineIndex)
++	{
++		if(vLines[LineIndex].empty())
++			continue;
++		const std::vector<std::string> vFields = Split(vLines[LineIndex], '\t');
++		if(vFields.size() != 6 || vFields[0] != "M" || !IsHexHash(vFields[2]))
++		{
++			SetError(pError, "warehouse index contains a malformed map record");
++			return false;
++		}
++		SMap MapValue;
++		if(!PercentDecode(vFields[1], &MapValue.m_Name) || !PercentDecode(vFields[5], &MapValue.m_SourcePath) || !str_utf8_check(MapValue.m_Name.c_str()) || MapValue.m_Name.empty() || MapValue.m_Name.size() > 256)
++		{
++			SetError(pError, "warehouse index contains invalid encoded text");
++			return false;
++		}
++		MapValue.m_Hash = vFields[2];
++		const long long Size = str_toint64_base(vFields[3].c_str());
++		if(Size < 0 || (vFields[4] != "A" && vFields[4] != "D") || MapValue.m_SourcePath.empty() || MapValue.m_SourcePath.size() > 512 || MapValue.m_SourcePath == "." || MapValue.m_SourcePath == ".." || MapValue.m_SourcePath.find_first_of("/\\\t\r\n") != std::string::npos || !str_endswith_nocase(MapValue.m_SourcePath.c_str(), ".map"))
++		{
++			SetError(pError, "warehouse index contains an unsafe map source");
++			return false;
++		}
++		MapValue.m_Size = static_cast<uint64_t>(Size);
++		const auto [ContentIt, Inserted] = ContentSizes.emplace(MapValue.m_Hash, MapValue.m_Size);
++		if(!Inserted && ContentIt->second != MapValue.m_Size)
++		{
++			SetError(pError, "warehouse index disagrees about a map's content size");
++			return false;
++		}
++		MapValue.m_SourceKind = vFields[4][0];
++		MapValue.m_NormalizedName = Normalize(MapValue.m_Name);
++		vMaps.push_back(std::move(MapValue));
++	}
++	if(static_cast<int>(vMaps.size()) != DeclaredMaps || static_cast<int>(ContentSizes.size()) != DeclaredUnique)
++	{
++		SetError(pError, "warehouse index counts do not match its header");
++		return false;
++	}
++	m_vMaps = std::move(vMaps);
++	m_UniqueMapCount = DeclaredUnique;
++	m_IndexIdentity = ArchiveSha + ":" + AuthorityListingSha;
++	return true;
++}
++
++bool CMapWarehouse::LoadCollections(IStorage *pStorage, std::string *pError)
++{
++	m_vCollections.clear();
++	m_NextCollectionId = 1;
++	if(!pStorage->FileExists(m_StatePath.c_str(), IStorage::TYPE_SAVE))
++		return true;
++	char *pData = pStorage->ReadFileStr(m_StatePath.c_str(), IStorage::TYPE_SAVE);
++	if(!pData)
++	{
++		SetError(pError, "search collection state is unreadable");
++		return false;
++	}
++	std::string Data(pData);
++	free(pData);
++	const std::vector<std::string> vLines = Split(Data, '\n');
++	if(vLines.size() < 2 || vLines[0] != STATE_HEADER || vLines[1] != "index\t" + m_IndexIdentity)
++	{
++		SetError(pError, "search collection state belongs to another warehouse index");
++		return false;
++	}
++	std::unordered_map<std::string, int> CanonicalByHash;
++	for(int MapIndex = 0; MapIndex < static_cast<int>(m_vMaps.size()); ++MapIndex)
++		CanonicalByHash.try_emplace(m_vMaps[MapIndex].m_Hash, MapIndex);
++	std::set<int> Ids;
++	for(size_t LineIndex = 2; LineIndex < vLines.size(); ++LineIndex)
++	{
++		if(vLines[LineIndex].empty())
++			continue;
++		const std::vector<std::string> vFields = Split(vLines[LineIndex], '\t');
++		if(vFields.size() != 5 || vFields[0] != "C")
++		{
++			SetError(pError, "search collection state contains a malformed record");
++			return false;
++		}
++		SCollection Collection;
++		Collection.m_Id = str_toint(vFields[1].c_str());
++		if(Collection.m_Id <= 0 || Collection.m_Id > 1000000 || !Ids.insert(Collection.m_Id).second || !PercentDecode(vFields[2], &Collection.m_Name) || !PercentDecode(vFields[3], &Collection.m_Query) || !str_utf8_check(Collection.m_Name.c_str()) || !str_utf8_check(Collection.m_Query.c_str()))
++		{
++			SetError(pError, "search collection state contains an invalid identity");
++			return false;
++		}
++		std::set<std::string> Hashes;
++		for(const std::string &Hash : Split(vFields[4], ','))
++		{
++			if(Hash.empty())
++				continue;
++			const auto It = CanonicalByHash.find(Hash);
++			if(!IsHexHash(Hash) || It == CanonicalByHash.end() || !Hashes.insert(Hash).second)
++			{
++				SetError(pError, "search collection references an unknown map");
++				return false;
++			}
++			Collection.m_vMapIndices.push_back(It->second);
++		}
++		const bool DuplicateName = std::any_of(m_vCollections.begin(), m_vCollections.end(), [&](const SCollection &Existing) {
++			return str_utf8_comp_nocase(Existing.m_Name.c_str(), Collection.m_Name.c_str()) == 0;
++		});
++		if(Collection.m_Name.empty() || Collection.m_Name.size() > 40 || Collection.m_Query.empty() || Collection.m_Query.size() > 180 || DuplicateName || Collection.m_vMapIndices.empty() || Collection.m_vMapIndices.size() > MAX_COLLECTION_MAPS)
++		{
++			SetError(pError, "search collection exceeds runtime limits");
++			return false;
++		}
++		m_NextCollectionId = std::max(m_NextCollectionId, Collection.m_Id + 1);
++		m_vCollections.push_back(std::move(Collection));
++	}
++	if(m_vCollections.size() > MAX_COLLECTIONS)
++	{
++		SetError(pError, "too many persisted search collections");
++		return false;
++	}
++	return true;
++}
++
++bool CMapWarehouse::SaveCollections(IStorage *pStorage, std::string *pError) const
++{
++	std::string Content = std::string(STATE_HEADER) + "\nindex\t" + m_IndexIdentity + "\n";
++	for(const SCollection &Collection : m_vCollections)
++	{
++		Content += "C\t" + std::to_string(Collection.m_Id) + "\t" + PercentEncode(Collection.m_Name) + "\t" + PercentEncode(Collection.m_Query) + "\t";
++		for(size_t Index = 0; Index < Collection.m_vMapIndices.size(); ++Index)
++		{
++			const SMap *pMap = Map(Collection.m_vMapIndices[Index]);
++			if(!pMap)
++			{
++				SetError(pError, "search collection references an unknown map");
++				return false;
++			}
++			if(Index != 0)
++				Content.push_back(',');
++			Content += pMap->m_Hash;
++		}
++		Content.push_back('\n');
++	}
++	char aTemporary[IO_MAX_PATH_LENGTH];
++	IStorage::FormatTmpPath(aTemporary, sizeof(aTemporary), m_StatePath.c_str());
++	IOHANDLE File = pStorage->OpenFile(aTemporary, IOFLAG_WRITE, IStorage::TYPE_SAVE);
++	if(!File)
++	{
++		SetError(pError, "could not create search collection state");
++		return false;
++	}
++	const bool Written = io_write(File, Content.data(), Content.size()) == Content.size() && io_sync(File) == 0;
++	io_close(File);
++	if(!Written || !pStorage->RenameFile(aTemporary, m_StatePath.c_str(), IStorage::TYPE_SAVE))
++	{
++		pStorage->RemoveFile(aTemporary, IStorage::TYPE_SAVE);
++		SetError(pError, "could not atomically publish search collection state");
++		return false;
++	}
++	return true;
++}
++
++bool CMapWarehouse::Load(IStorage *pStorage, IConsole *pConsole, const char *pIndexPath, const char *pStatePath, std::string *pError)
++{
++	if(pError)
++		pError->clear();
++	m_Active = false;
++	m_vMaps.clear();
++	m_vCollections.clear();
++	if(!pStorage || !pIndexPath || !pIndexPath[0] || !pStatePath || !pStatePath[0] || !fs_is_relative_path(pStatePath) || str_find(pStatePath, ".."))
++	{
++		SetError(pError, "warehouse paths are not safely configured");
++		return false;
++	}
++	m_StatePath = pStatePath;
++	if(!LoadIndex(pStorage, pIndexPath, pError) || !LoadCollections(pStorage, pError))
++		return false;
++	m_Active = true;
++	if(pConsole)
++	{
++		char aMessage[192];
++		str_format(aMessage, sizeof(aMessage), "loaded %d historical names, %d unique maps and %d search collections", AliasCount(), UniqueMapCount(), static_cast<int>(m_vCollections.size()));
++		pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "map-warehouse", aMessage);
++	}
++	return true;
++}
++
++CMapWarehouse::SSearchResult CMapWarehouse::Search(const char *pInput, IStorage *pStorage)
++{
++	SSearchResult Result;
++	if(!m_Active || !pStorage)
++	{
++		Result.m_Message = "The map archive is unavailable";
++		return Result;
++	}
++	SParsedSearch Parsed;
++	if(!ParseSearch(pInput, &Parsed, &Result.m_Message))
++		return Result;
++
++	for(const SCollection &Collection : m_vCollections)
++	{
++		if(str_utf8_comp_nocase(Collection.m_Name.c_str(), Parsed.m_Name.c_str()) == 0)
++		{
++			if(Collection.m_Query == Parsed.m_CanonicalQuery)
++			{
++				Result.m_Status = ESearchStatus::EXISTING;
++				Result.m_CollectionId = Collection.m_Id;
++				Result.m_CollectionName = Collection.m_Name;
++				Result.m_UniqueMatches = static_cast<int>(Collection.m_vMapIndices.size());
++				Result.m_Message = "That search is already ready";
++				return Result;
++			}
++			if(Parsed.m_ExplicitName)
++			{
++				Result.m_Message = "That collection name is already in use; choose another with --name";
++				return Result;
++			}
++		}
++	}
++	if(!Parsed.m_ExplicitName)
++	{
++		const std::string BaseName = Parsed.m_Name;
++		for(int Suffix = 2;; ++Suffix)
++		{
++			const bool Available = std::none_of(m_vCollections.begin(), m_vCollections.end(), [&](const SCollection &Collection) {
++				return str_utf8_comp_nocase(Collection.m_Name.c_str(), Parsed.m_Name.c_str()) == 0;
++			});
++			if(Available)
++				break;
++			const std::string SuffixText = " · " + std::to_string(Suffix);
++			Parsed.m_Name = Utf8Truncate(BaseName, 40 - static_cast<int>(SuffixText.size())) + SuffixText;
++		}
++	}
++	if(m_vCollections.size() >= MAX_COLLECTIONS)
++	{
++		Result.m_Message = "The server already has 24 search collections; an administrator must clear them first";
++		return Result;
++	}
++
++	std::unordered_set<std::string> SeenHashes;
++	std::vector<int> vMatches;
++	for(int MapIndex = 0; MapIndex < static_cast<int>(m_vMaps.size()); ++MapIndex)
++	{
++		const SMap &MapValue = m_vMaps[MapIndex];
++		if(MapValue.m_Size == 0)
++			continue;
++		const bool Included = std::all_of(Parsed.m_vPositive.begin(), Parsed.m_vPositive.end(), [&](const std::string &Pattern) {
++			return GlobMatch(Pattern, MapValue.m_NormalizedName);
++		});
++		const bool Excluded = std::any_of(Parsed.m_vNegative.begin(), Parsed.m_vNegative.end(), [&](const std::string &Pattern) {
++			return GlobMatch(Pattern, MapValue.m_NormalizedName);
++		});
++		if(!Included || Excluded)
++			continue;
++		++Result.m_AliasMatches;
++		if(SeenHashes.insert(MapValue.m_Hash).second)
++		{
++			vMatches.push_back(MapIndex);
++			if(vMatches.size() > MAX_COLLECTION_MAPS)
++			{
++				Result.m_Message = "More than 1,000 unique maps matched; add another word or exclusion";
++				return Result;
++			}
++		}
++	}
++	if(vMatches.empty())
++	{
++		Result.m_Message = "No archive maps matched that search";
++		return Result;
++	}
++
++	SCollection Collection;
++	Collection.m_Id = m_NextCollectionId++;
++	Collection.m_Name = Parsed.m_Name;
++	Collection.m_Query = Parsed.m_CanonicalQuery;
++	Collection.m_vMapIndices = std::move(vMatches);
++	m_vCollections.push_back(Collection);
++	std::string Error;
++	if(!SaveCollections(pStorage, &Error))
++	{
++		m_vCollections.pop_back();
++		--m_NextCollectionId;
++		Result.m_Message = Error;
++		return Result;
++	}
++	Result.m_Status = ESearchStatus::CREATED;
++	Result.m_CollectionId = Collection.m_Id;
++	Result.m_CollectionName = Collection.m_Name;
++	Result.m_UniqueMatches = static_cast<int>(Collection.m_vMapIndices.size());
++	Result.m_Message = "Search collection created";
++	return Result;
++}
++
++bool CMapWarehouse::ClearCollections(IStorage *pStorage, std::string *pError)
++{
++	if(!pStorage)
++	{
++		SetError(pError, "storage is unavailable");
++		return false;
++	}
++	const std::vector<SCollection> vPrevious = m_vCollections;
++	m_vCollections.clear();
++	if(!SaveCollections(pStorage, pError))
++	{
++		m_vCollections = vPrevious;
++		return false;
++	}
++	m_NextCollectionId = 1;
++	return true;
++}
++
++bool CMapWarehouse::QueueMap(const char *pHash, IEngine *pEngine, IStorage *pStorage, const char *pArchivePath, const char *pDeltaDirectory, const char *pExtractorPath, const char *pCacheDirectory, int CacheMaxMegabytes, int CacheMaxMaps, const char *pCurrentMapPath, std::string *pDisplayName, std::string *pError)
++{
++	if(m_pExtractJob)
++	{
++		SetError(pError, "another archive map is already being prepared");
++		return false;
++	}
++	const bool ValidHash = pHash && IsHexHash(pHash);
++	const SMap *pMap = ValidHash ? CanonicalMapByHash(pHash) : nullptr;
++	if(!pMap || !pEngine || !pStorage || !pArchivePath || !pArchivePath[0] || !pDeltaDirectory || !pDeltaDirectory[0] || !pExtractorPath || !pExtractorPath[0] || !pCacheDirectory || !str_startswith(pCacheDirectory, "maps/") || str_find(pCacheDirectory, "..") || CacheMaxMegabytes < 64 || CacheMaxMaps < 2)
++	{
++		SetError(pError, "map warehouse runtime settings are invalid");
++		return false;
++	}
++	char aCacheAbsolute[IO_MAX_PATH_LENGTH];
++	pStorage->GetCompletePath(IStorage::TYPE_SAVE, pCacheDirectory, aCacheAbsolute, sizeof(aCacheAbsolute));
++	std::string CurrentAbsolute;
++	if(pCurrentMapPath && str_startswith(pCurrentMapPath, pCacheDirectory + str_length("maps/")))
++		CurrentAbsolute = std::string(aCacheAbsolute) + "/" + fs_filename(pCurrentMapPath) + ".map";
++	const int64_t MaxBytes = static_cast<int64_t>(CacheMaxMegabytes) * 1024 * 1024;
++	auto pJob = std::make_shared<CMapExtractJob>(*pMap, pArchivePath, pDeltaDirectory, pExtractorPath, aCacheAbsolute, pCacheDirectory + str_length("maps/"), MaxBytes, CacheMaxMaps, CurrentAbsolute);
++	m_pExtractJob = pJob;
++	m_PrepareStartTime = time_get();
++	m_PreparingDisplayName = pMap->m_Name;
++	if(pDisplayName)
++		*pDisplayName = pMap->m_Name;
++	pEngine->AddJob(pJob);
++	return true;
++}
++
++CMapWarehouse::SPreparedMap CMapWarehouse::PollPreparedMap()
++{
++	SPreparedMap Result;
++	if(!m_pExtractJob || !m_pExtractJob->Done())
++		return Result;
++	Result.m_Finished = true;
++	Result.m_DisplayName = m_PreparingDisplayName;
++	if(m_pExtractJob->State() == IJob::STATE_DONE)
++	{
++		const auto pJob = std::static_pointer_cast<CMapExtractJob>(m_pExtractJob);
++		Result.m_Success = pJob->Success();
++		Result.m_MapPath = pJob->ResultMapPath();
++		Result.m_Error = pJob->Error();
++	}
++	else
++		Result.m_Error = "map preparation was cancelled";
++	m_pExtractJob.reset();
++	m_PrepareStartTime = 0;
++	m_PreparingDisplayName.clear();
++	return Result;
++}
++
++void CMapWarehouse::AbortPreparation()
++{
++	if(m_pExtractJob && !m_pExtractJob->Done())
++		m_pExtractJob->Abort();
++}
+diff --git a/src/game/server/map_warehouse.h b/src/game/server/map_warehouse.h
+new file mode 100644
+index 0000000..d55e7e0
+--- /dev/null
++++ b/src/game/server/map_warehouse.h
+@@ -0,0 +1,106 @@
++#ifndef GAME_SERVER_MAP_WAREHOUSE_H
++#define GAME_SERVER_MAP_WAREHOUSE_H
++
++#include <cstdint>
++#include <memory>
++#include <string>
++#include <vector>
++
++class IConsole;
++class IEngine;
++class IJob;
++class IStorage;
++
++class CMapWarehouse
++{
++public:
++	static constexpr int MAX_COLLECTIONS = 24;
++	static constexpr int MAX_COLLECTION_MAPS = 1000;
++
++	enum class ESearchStatus
++	{
++		CREATED,
++		EXISTING,
++		ERROR,
++	};
++
++	struct SMap
++	{
++		std::string m_Name;
++		std::string m_NormalizedName;
++		std::string m_Hash;
++		uint64_t m_Size = 0;
++		char m_SourceKind = '\0';
++		std::string m_SourcePath;
++	};
++
++	struct SCollection
++	{
++		int m_Id = 0;
++		std::string m_Name;
++		std::string m_Query;
++		std::vector<int> m_vMapIndices;
++	};
++
++	struct SSearchResult
++	{
++		ESearchStatus m_Status = ESearchStatus::ERROR;
++		int m_CollectionId = -1;
++		int m_UniqueMatches = 0;
++		int m_AliasMatches = 0;
++		std::string m_CollectionName;
++		std::string m_Message;
++	};
++
++	struct SPreparedMap
++	{
++		bool m_Finished = false;
++		bool m_Success = false;
++		std::string m_MapPath;
++		std::string m_DisplayName;
++		std::string m_Error;
++	};
++
++	CMapWarehouse();
++	~CMapWarehouse();
++
++	CMapWarehouse(const CMapWarehouse &) = delete;
++	CMapWarehouse &operator=(const CMapWarehouse &) = delete;
++
++	bool Load(IStorage *pStorage, IConsole *pConsole, const char *pIndexPath, const char *pStatePath, std::string *pError);
++	bool Active() const { return m_Active; }
++	int AliasCount() const { return static_cast<int>(m_vMaps.size()); }
++	int UniqueMapCount() const { return m_UniqueMapCount; }
++	const std::vector<SCollection> &Collections() const { return m_vCollections; }
++	const SMap *Map(int Index) const;
++	const SCollection *CollectionById(int Id) const;
++
++	SSearchResult Search(const char *pInput, IStorage *pStorage);
++	bool ClearCollections(IStorage *pStorage, std::string *pError);
++
++	bool QueueMap(const char *pHash, IEngine *pEngine, IStorage *pStorage, const char *pArchivePath, const char *pDeltaDirectory, const char *pExtractorPath, const char *pCacheDirectory, int CacheMaxMegabytes, int CacheMaxMaps, const char *pCurrentMapPath, std::string *pDisplayName, std::string *pError);
++	SPreparedMap PollPreparedMap();
++	bool Busy() const { return m_pExtractJob != nullptr; }
++	int64_t PrepareStartTime() const { return m_PrepareStartTime; }
++	const std::string &PreparingDisplayName() const { return m_PreparingDisplayName; }
++	void AbortPreparation();
++
++private:
++	bool m_Active = false;
++	int m_UniqueMapCount = 0;
++	int m_NextCollectionId = 1;
++	std::string m_IndexIdentity;
++	std::string m_StatePath;
++	std::vector<SMap> m_vMaps;
++	std::vector<SCollection> m_vCollections;
++	std::shared_ptr<IJob> m_pExtractJob;
++	int64_t m_PrepareStartTime = 0;
++	std::string m_PreparingDisplayName;
++
++	bool LoadIndex(IStorage *pStorage, const char *pIndexPath, std::string *pError);
++	bool LoadCollections(IStorage *pStorage, std::string *pError);
++	bool SaveCollections(IStorage *pStorage, std::string *pError) const;
++	const SMap *CanonicalMapByHash(const char *pHash) const;
++};
++
++#endif // GAME_SERVER_MAP_WAREHOUSE_H
 diff --git a/src/game/server/player.cpp b/src/game/server/player.cpp
-index 94e492d..6639a67 100644
+index 94e492d..0cb1a00 100644
 --- a/src/game/server/player.cpp
 +++ b/src/game/server/player.cpp
-@@ -90,6 +90,9 @@ void CPlayer::Reset()
+@@ -90,6 +90,11 @@ void CPlayer::Reset()
  	m_FirstPacket = true;
  
  	m_SendVoteIndex = -1;
 +	m_MapVotePage = 0;
 +	m_MapVoteType = -1;
++	m_MapVoteSubPage = 0;
 +	m_LastMapVoteNavigationTick = -1;
++	m_LastMapWarehouseSearchTick = -1;
  
  	if(g_Config.m_Events)
  	{
 diff --git a/src/game/server/player.h b/src/game/server/player.h
-index 76fc425..9fe84e9 100644
+index 76fc425..6495940 100644
 --- a/src/game/server/player.h
 +++ b/src/game/server/player.h
-@@ -101,6 +101,9 @@ public:
+@@ -101,6 +101,11 @@ public:
  	int m_LastInvited;
  
  	int m_SendVoteIndex;
 +	int m_MapVotePage;
 +	int m_MapVoteType;
++	int m_MapVoteSubPage;
 +	int m_LastMapVoteNavigationTick;
++	int m_LastMapWarehouseSearchTick;
  
  	CTeeInfo m_TeeInfos;
  
 diff --git a/src/test/map_vote_catalog_test.cpp b/src/test/map_vote_catalog_test.cpp
 new file mode 100644
-index 0000000..fb61050
+index 0000000..fc58a46
 --- /dev/null
 +++ b/src/test/map_vote_catalog_test.cpp
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,285 @@
 +#include "test.h"
 +
 +#include <base/io.h>
@@ -1214,12 +2885,15 @@ index 0000000..fb61050
 +	EXPECT_FALSE(CMapVoteCatalog::IsNavigation(EOptionKind::NORMAL));
 +	EXPECT_FALSE(CMapVoteCatalog::IsNavigation(EOptionKind::RANDOM));
 +	EXPECT_FALSE(CMapVoteCatalog::IsNavigation(EOptionKind::MAP));
++	EXPECT_FALSE(CMapVoteCatalog::IsNavigation(EOptionKind::INFO));
++	EXPECT_TRUE(CMapVoteCatalog::IsInformational(EOptionKind::INFO));
++	EXPECT_FALSE(CMapVoteCatalog::IsInformational(EOptionKind::MAP));
 +}
 +
 +TEST_F(CMapVoteCatalogTest, PublishesReadablePagesAndResolvesCommands)
 +{
 +	std::string Error = "stale error";
-+	ASSERT_TRUE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Error)) << Error;
++	ASSERT_TRUE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, nullptr, &Error)) << Error;
 +	EXPECT_TRUE(Error.empty());
 +	ASSERT_TRUE(m_Catalog.Active());
 +	EXPECT_EQ(m_Catalog.MapCount(), 3);
@@ -1317,7 +2991,7 @@ index 0000000..fb61050
 +	ASSERT_TRUE(CreateMap(pSecondMap));
 +
 +	std::string Error;
-+	ASSERT_TRUE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Error)) << Error;
++	ASSERT_TRUE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, nullptr, &Error)) << Error;
 +	const SPageId DdraceTypes{EPage::DDRACE_TYPES, -1};
 +	const CMapVoteCatalog::SEntry *pFirstFolder = m_Catalog.Find(DdraceTypes, "Browse Foo Bar [foo.bar] maps  ›");
 +	const CMapVoteCatalog::SEntry *pSecondFolder = m_Catalog.Find(DdraceTypes, "Browse Foo Bar [foo_bar] maps  ›");
@@ -1331,7 +3005,7 @@ index 0000000..fb61050
 +TEST_F(CMapVoteCatalogTest, FailedRebuildPreservesPublishedCatalog)
 +{
 +	std::string Error;
-+	ASSERT_TRUE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Error)) << Error;
++	ASSERT_TRUE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, nullptr, &Error)) << Error;
 +	const SPageId Root{EPage::ROOT, -1};
 +	const CMapVoteCatalog::SEntry *pPublishedGoresRandom = m_Catalog.OptionAt(Root, 4);
 +	ASSERT_NE(pPublishedGoresRandom, nullptr);
@@ -1339,7 +3013,7 @@ index 0000000..fb61050
 +
 +	ASSERT_TRUE(m_pStorage->RemoveFile(GORES_MAP, IStorage::TYPE_SAVE));
 +	Error.clear();
-+	EXPECT_FALSE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Error));
++	EXPECT_FALSE(m_Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, nullptr, &Error));
 +	EXPECT_FALSE(Error.empty());
 +
 +	EXPECT_TRUE(m_Catalog.Active());
@@ -1347,6 +3021,428 @@ index 0000000..fb61050
 +	EXPECT_EQ(m_Catalog.OptionCount(Root), 5);
 +	const CMapVoteCatalog::SEntry *pPreservedGoresRandom = m_Catalog.Find(Root, PublishedDescription.c_str());
 +	ExpectResolvedCommand(m_Catalog, pPreservedGoresRandom, "change_map \"tw_maps/KoGmaps-main/HARD/Omega\"");
++}
+diff --git a/src/test/map_warehouse_test.cpp b/src/test/map_warehouse_test.cpp
+new file mode 100644
+index 0000000..5f13f31
+--- /dev/null
++++ b/src/test/map_warehouse_test.cpp
+@@ -0,0 +1,416 @@
++#include "test.h"
++
++#include <base/io.h>
++#include <base/str.h>
++
++#include <engine/shared/protocol.h>
++#include <engine/storage.h>
++
++#include <game/server/map_vote_catalog.h>
++#include <game/server/map_warehouse.h>
++#include <game/voting.h>
++
++#include <gtest/gtest.h>
++
++#include <algorithm>
++#include <memory>
++#include <set>
++#include <string>
++#include <utility>
++#include <vector>
++
++namespace
++{
++	constexpr const char *ARCHIVE_HASH = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
++	constexpr const char *AUTHORITY_HASH = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
++	constexpr const char *MIRROR_HASH = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
++
++	struct STestMap
++	{
++		std::string m_Name;
++		std::string m_Hash;
++		int m_Size = 1;
++	};
++
++	std::string TestHash(int Value)
++	{
++		char aHash[65];
++		str_format(aHash, sizeof(aHash), "%064x", static_cast<unsigned>(Value));
++		return aHash;
++	}
++
++	std::string PercentEncode(const std::string &Value)
++	{
++		static constexpr char HEX[] = "0123456789ABCDEF";
++		std::string Result;
++		for(const unsigned char Ch : Value)
++		{
++			if((Ch >= 'a' && Ch <= 'z') || (Ch >= 'A' && Ch <= 'Z') || (Ch >= '0' && Ch <= '9') || Ch == '-' || Ch == '.' || Ch == '_' || Ch == '~')
++				Result.push_back(static_cast<char>(Ch));
++			else
++			{
++				Result.push_back('%');
++				Result.push_back(HEX[Ch >> 4]);
++				Result.push_back(HEX[Ch & 0xf]);
++			}
++		}
++		return Result;
++	}
++
++	bool WriteFile(IStorage *pStorage, const char *pPath, const std::string &Content)
++	{
++		IOHANDLE File = pStorage->OpenFile(pPath, IOFLAG_WRITE, IStorage::TYPE_SAVE);
++		if(!File)
++			return false;
++		const bool Success = io_write(File, Content.data(), Content.size()) == Content.size() && io_close(File) == 0;
++		return Success;
++	}
++
++	std::vector<STestMap> DefaultMaps()
++	{
++		return {
++			{"[BoD] AiP DDRace", TestHash(1), 100},
++			{"AiP Race Alias", TestHash(1), 100},
++			{"Race Before AiP", TestHash(2), 200},
++			{"AiP Solo Race Old", TestHash(3), 300},
++			{"Gores Race", TestHash(4), 400},
++			{"Zero Race", TestHash(5), 0},
++		};
++	}
++
++	class CMapWarehouseTest : public ::testing::Test
++	{
++	protected:
++		CTestInfo m_TestInfo;
++		std::unique_ptr<IStorage> m_pStorage;
++		std::vector<std::string> m_vCoreMapFiles;
++		std::vector<std::string> m_vCoreMapDirectories;
++
++		void SetUp() override
++		{
++			m_TestInfo.m_DeleteTestStorageFilesOnSuccess = true;
++			m_pStorage = m_TestInfo.CreateTestStorage();
++			ASSERT_NE(m_pStorage, nullptr);
++			ASSERT_TRUE(m_pStorage->CreateFolder("state", IStorage::TYPE_SAVE));
++		}
++
++		void TearDown() override
++		{
++			for(auto It = m_vCoreMapFiles.rbegin(); It != m_vCoreMapFiles.rend(); ++It)
++				EXPECT_TRUE(m_pStorage->RemoveFile(It->c_str(), IStorage::TYPE_SAVE)) << *It;
++			for(auto It = m_vCoreMapDirectories.rbegin(); It != m_vCoreMapDirectories.rend(); ++It)
++				EXPECT_TRUE(m_pStorage->RemoveFolder(It->c_str(), IStorage::TYPE_SAVE)) << *It;
++		}
++
++		void WriteIndex(const std::vector<STestMap> &vMaps, const char *pAuthorityHash = AUTHORITY_HASH, int DeclaredUnique = -1)
++		{
++			std::set<std::string> UniqueHashes;
++			for(const STestMap &Map : vMaps)
++				UniqueHashes.insert(Map.m_Hash);
++			if(DeclaredUnique < 0)
++				DeclaredUnique = static_cast<int>(UniqueHashes.size());
++			std::string Index = std::string("TW_MAP_WAREHOUSE_INDEX\t1\n") +
++					    "archive_sha256\t" + ARCHIVE_HASH + "\n" +
++					    "archive_size\t123\n" +
++					    "authority_listing_sha256\t" + pAuthorityHash + "\n" +
++					    "mirror_listing_sha256\t" + MIRROR_HASH + "\n" +
++					    "map_entries\t" + std::to_string(vMaps.size()) + "\n" +
++					    "unique_content\t" + std::to_string(DeclaredUnique) + "\n\n";
++			for(const STestMap &Map : vMaps)
++			{
++				Index += "M\t" + PercentEncode(Map.m_Name) + "\t" + Map.m_Hash + "\t" + std::to_string(Map.m_Size) + "\tA\t" + Map.m_Hash + ".map\n";
++			}
++			ASSERT_TRUE(WriteFile(m_pStorage.get(), "warehouse-index.tsv", Index));
++		}
++
++		void Load(CMapWarehouse *pWarehouse)
++		{
++			std::string Error;
++			ASSERT_TRUE(pWarehouse->Load(m_pStorage.get(), nullptr, "warehouse-index.tsv", "state/collections.tsv", &Error)) << Error;
++			ASSERT_TRUE(Error.empty());
++		}
++
++		void CreateCoreMapCatalog()
++		{
++			const char *apDirectories[] = {
++				"maps",
++				"maps/tw_maps",
++				"maps/tw_maps/ddnet-maps-master",
++				"maps/tw_maps/ddnet-maps-master/types",
++				"maps/tw_maps/ddnet-maps-master/types/novice",
++				"maps/tw_maps/ddnet-maps-master/types/novice/maps",
++				"maps/tw_maps/KoGmaps-main",
++				"maps/tw_maps/KoGmaps-main/HARD",
++			};
++			for(const char *pDirectory : apDirectories)
++			{
++				ASSERT_TRUE(m_pStorage->CreateFolder(pDirectory, IStorage::TYPE_SAVE));
++				m_vCoreMapDirectories.emplace_back(pDirectory);
++			}
++			m_vCoreMapFiles = {
++				"maps/tw_maps/ddnet-maps-master/types/novice/maps/Alpha.map",
++				"maps/tw_maps/KoGmaps-main/HARD/Omega.map",
++			};
++			for(const std::string &Path : m_vCoreMapFiles)
++				ASSERT_TRUE(WriteFile(m_pStorage.get(), Path.c_str(), ""));
++		}
++	};
++} // namespace
++
++TEST_F(CMapWarehouseTest, SearchesAnyOrderDeduplicatesAliasesAndPersists)
++{
++	WriteIndex(DefaultMaps());
++	CMapWarehouse Warehouse;
++	Load(&Warehouse);
++	EXPECT_EQ(Warehouse.AliasCount(), 6);
++	EXPECT_EQ(Warehouse.UniqueMapCount(), 5);
++
++	const CMapWarehouse::SSearchResult Ordered = Warehouse.Search("*aip*race*", m_pStorage.get());
++	EXPECT_EQ(Ordered.m_Status, CMapWarehouse::ESearchStatus::CREATED);
++	EXPECT_EQ(Ordered.m_CollectionName, "AIP · Race");
++	EXPECT_EQ(Ordered.m_UniqueMatches, 2);
++	EXPECT_EQ(Ordered.m_AliasMatches, 3);
++
++	const CMapWarehouse::SSearchResult Existing = Warehouse.Search("*aip*race*", m_pStorage.get());
++	EXPECT_EQ(Existing.m_Status, CMapWarehouse::ESearchStatus::EXISTING);
++	EXPECT_EQ(Existing.m_CollectionId, Ordered.m_CollectionId);
++
++	const CMapWarehouse::SSearchResult Collision = Warehouse.Search("race aip --name AIP · Race", m_pStorage.get());
++	EXPECT_EQ(Collision.m_Status, CMapWarehouse::ESearchStatus::ERROR);
++	EXPECT_NE(Collision.m_Message.find("already in use"), std::string::npos);
++
++	const CMapWarehouse::SSearchResult AnyOrder = Warehouse.Search("race aip --name Any Order", m_pStorage.get());
++	EXPECT_EQ(AnyOrder.m_Status, CMapWarehouse::ESearchStatus::CREATED);
++	EXPECT_EQ(AnyOrder.m_UniqueMatches, 3);
++	EXPECT_EQ(AnyOrder.m_AliasMatches, 4);
++
++	const CMapWarehouse::SSearchResult Excluded = Warehouse.Search("race -gores --name No Gores", m_pStorage.get());
++	EXPECT_EQ(Excluded.m_Status, CMapWarehouse::ESearchStatus::CREATED);
++	EXPECT_EQ(Excluded.m_UniqueMatches, 3);
++	EXPECT_EQ(Excluded.m_AliasMatches, 4);
++
++	std::vector<STestMap> vReorderedMaps = DefaultMaps();
++	std::reverse(vReorderedMaps.begin(), vReorderedMaps.end());
++	WriteIndex(vReorderedMaps);
++	CMapWarehouse Reloaded;
++	Load(&Reloaded);
++	ASSERT_EQ(Reloaded.Collections().size(), 3U);
++	EXPECT_EQ(Reloaded.CollectionById(Ordered.m_CollectionId)->m_Name, "AIP · Race");
++	EXPECT_EQ(Reloaded.CollectionById(AnyOrder.m_CollectionId)->m_Name, "Any Order");
++}
++
++TEST_F(CMapWarehouseTest, RejectsMalformedAndOverbroadSearches)
++{
++	WriteIndex(DefaultMaps());
++	CMapWarehouse Warehouse;
++	Load(&Warehouse);
++	const char *apRejected[] = {
++		"",
++		"-race",
++		"a",
++		"*a*",
++		"* -zz",
++		"\"race",
++		"race --name",
++		"one two three four five six seven eight nine",
++		"definitely-absent",
++	};
++	for(const char *pSearch : apRejected)
++	{
++		const CMapWarehouse::SSearchResult Result = Warehouse.Search(pSearch, m_pStorage.get());
++		EXPECT_EQ(Result.m_Status, CMapWarehouse::ESearchStatus::ERROR) << pSearch;
++		EXPECT_FALSE(Result.m_Message.empty()) << pSearch;
++	}
++	EXPECT_TRUE(Warehouse.Collections().empty());
++}
++
++TEST_F(CMapWarehouseTest, WildcardsMatchUtf8CharactersAndNamesFoldCase)
++{
++	WriteIndex({{"Ägypten", TestHash(1), 10}});
++	CMapWarehouse Warehouse;
++	Load(&Warehouse);
++	const CMapWarehouse::SSearchResult QuestionMark = Warehouse.Search("?gypten --name One Character", m_pStorage.get());
++	EXPECT_EQ(QuestionMark.m_Status, CMapWarehouse::ESearchStatus::CREATED);
++	EXPECT_EQ(QuestionMark.m_UniqueMatches, 1);
++	const CMapWarehouse::SSearchResult FoldedCase = Warehouse.Search("ägypten --name Folded Case", m_pStorage.get());
++	EXPECT_EQ(FoldedCase.m_Status, CMapWarehouse::ESearchStatus::CREATED);
++	EXPECT_EQ(FoldedCase.m_UniqueMatches, 1);
++}
++
++TEST_F(CMapWarehouseTest, EnforcesResultAndCollectionLimitsAndClearsAtomically)
++{
++	std::vector<STestMap> vBroadMaps;
++	for(int Index = 0; Index <= CMapWarehouse::MAX_COLLECTION_MAPS; ++Index)
++		vBroadMaps.push_back({"Bulk map " + std::to_string(Index), TestHash(Index + 1), 10});
++	WriteIndex(vBroadMaps);
++	CMapWarehouse BroadWarehouse;
++	Load(&BroadWarehouse);
++	const CMapWarehouse::SSearchResult Broad = BroadWarehouse.Search("bulk", m_pStorage.get());
++	EXPECT_EQ(Broad.m_Status, CMapWarehouse::ESearchStatus::ERROR);
++	EXPECT_NE(Broad.m_Message.find("1,000"), std::string::npos);
++	EXPECT_TRUE(BroadWarehouse.Collections().empty());
++
++	std::vector<STestMap> vCollectionMaps;
++	for(int Index = 0; Index <= CMapWarehouse::MAX_COLLECTIONS; ++Index)
++	{
++		char aName[32];
++		str_format(aName, sizeof(aName), "Collection map %02d", Index);
++		vCollectionMaps.push_back({aName, TestHash(Index + 1), 10});
++	}
++	WriteIndex(vCollectionMaps);
++	CMapWarehouse CollectionWarehouse;
++	Load(&CollectionWarehouse);
++	for(int Index = 0; Index < CMapWarehouse::MAX_COLLECTIONS; ++Index)
++	{
++		char aSearch[32];
++		str_format(aSearch, sizeof(aSearch), "map %02d", Index);
++		EXPECT_EQ(CollectionWarehouse.Search(aSearch, m_pStorage.get()).m_Status, CMapWarehouse::ESearchStatus::CREATED) << Index;
++	}
++	EXPECT_EQ(CollectionWarehouse.Collections().size(), static_cast<size_t>(CMapWarehouse::MAX_COLLECTIONS));
++	EXPECT_EQ(CollectionWarehouse.Search("map 24", m_pStorage.get()).m_Status, CMapWarehouse::ESearchStatus::ERROR);
++	std::string Error;
++	ASSERT_TRUE(CollectionWarehouse.ClearCollections(m_pStorage.get(), &Error)) << Error;
++	EXPECT_TRUE(CollectionWarehouse.Collections().empty());
++	EXPECT_EQ(CollectionWarehouse.Search("map 24", m_pStorage.get()).m_Status, CMapWarehouse::ESearchStatus::CREATED);
++}
++
++TEST_F(CMapWarehouseTest, FailsClosedForChangedAuthorityAndUnsafeIndexRecords)
++{
++	WriteIndex(DefaultMaps());
++	CMapWarehouse Warehouse;
++	Load(&Warehouse);
++	ASSERT_EQ(Warehouse.Search("gores", m_pStorage.get()).m_Status, CMapWarehouse::ESearchStatus::CREATED);
++
++	WriteIndex(DefaultMaps(), "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
++	CMapWarehouse ChangedAuthority;
++	std::string Error;
++	EXPECT_FALSE(ChangedAuthority.Load(m_pStorage.get(), nullptr, "warehouse-index.tsv", "state/collections.tsv", &Error));
++	EXPECT_NE(Error.find("another warehouse index"), std::string::npos);
++
++	ASSERT_TRUE(m_pStorage->RemoveFile("state/collections.tsv", IStorage::TYPE_SAVE));
++	const std::string UnsafeIndex = std::string("TW_MAP_WAREHOUSE_INDEX\t1\n") +
++					"archive_sha256\t" + ARCHIVE_HASH + "\n" +
++					"archive_size\t123\n" +
++					"authority_listing_sha256\t" + AUTHORITY_HASH + "\n" +
++					"mirror_listing_sha256\t" + MIRROR_HASH + "\n" +
++					"map_entries\t1\nunique_content\t1\n\n" +
++					"M\tUnsafe\t" + TestHash(1) + "\t10\tA\t..%2Fevil.map\n";
++	ASSERT_TRUE(WriteFile(m_pStorage.get(), "warehouse-index.tsv", UnsafeIndex));
++	CMapWarehouse UnsafeWarehouse;
++	Error.clear();
++	EXPECT_FALSE(UnsafeWarehouse.Load(m_pStorage.get(), nullptr, "warehouse-index.tsv", "state/collections.tsv", &Error));
++	EXPECT_NE(Error.find("unsafe map source"), std::string::npos);
++}
++
++TEST_F(CMapWarehouseTest, FailsClosedForInconsistentIndexCountsAndAliasSizes)
++{
++	WriteIndex(DefaultMaps(), AUTHORITY_HASH, 99);
++	CMapWarehouse WrongCount;
++	std::string Error;
++	EXPECT_FALSE(WrongCount.Load(m_pStorage.get(), nullptr, "warehouse-index.tsv", "state/collections.tsv", &Error));
++	EXPECT_NE(Error.find("counts do not match"), std::string::npos);
++
++	WriteIndex({{"First alias", TestHash(1), 10}, {"Second alias", TestHash(1), 11}});
++	CMapWarehouse ConflictingAliases;
++	Error.clear();
++	EXPECT_FALSE(ConflictingAliases.Load(m_pStorage.get(), nullptr, "warehouse-index.tsv", "state/collections.tsv", &Error));
++	EXPECT_NE(Error.find("content size"), std::string::npos);
++}
++
++TEST_F(CMapWarehouseTest, FailsClosedForDuplicatePersistedCollectionNames)
++{
++	WriteIndex(DefaultMaps());
++	const std::string State = std::string("TW_MAP_WAREHOUSE_COLLECTIONS\t1\n") +
++				  "index\t" + ARCHIVE_HASH + ":" + AUTHORITY_HASH + "\n" +
++				  "C\t1\tSame%20Name\trace\t" + TestHash(1) + "\n" +
++				  "C\t2\tsame%20name\tgores\t" + TestHash(4) + "\n";
++	ASSERT_TRUE(WriteFile(m_pStorage.get(), "state/collections.tsv", State));
++
++	CMapWarehouse Warehouse;
++	std::string Error;
++	EXPECT_FALSE(Warehouse.Load(m_pStorage.get(), nullptr, "warehouse-index.tsv", "state/collections.tsv", &Error));
++	EXPECT_NE(Error.find("runtime limits"), std::string::npos);
++}
++
++TEST_F(CMapWarehouseTest, LongUtf8MapNamesStayUniqueAndWithinVoteProtocolLimits)
++{
++	std::string LongName;
++	for(int Index = 0; Index < 115; ++Index)
++		LongName += "Ä";
++	LongName += " common";
++	WriteIndex({{LongName, TestHash(1), 10}, {LongName, TestHash(2), 11}});
++	CMapWarehouse Warehouse;
++	Load(&Warehouse);
++	const CMapWarehouse::SSearchResult Search = Warehouse.Search("common", m_pStorage.get());
++	ASSERT_EQ(Search.m_Status, CMapWarehouse::ESearchStatus::CREATED);
++	CreateCoreMapCatalog();
++
++	CMapVoteCatalog Catalog;
++	std::string Error;
++	ASSERT_TRUE(Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Warehouse, &Error)) << Error;
++	const CMapVoteCatalog::SPageId Collection{CMapVoteCatalog::EPage::WAREHOUSE_COLLECTION, Search.m_CollectionId, 0};
++	ASSERT_EQ(Catalog.OptionCount(Collection), 5);
++	std::set<std::string> MapDescriptions;
++	for(int Index = 0; Index < Catalog.OptionCount(Collection); ++Index)
++	{
++		const CMapVoteCatalog::SEntry *pEntry = Catalog.OptionAt(Collection, Index);
++		ASSERT_NE(pEntry, nullptr);
++		EXPECT_LT(pEntry->m_Description.size(), static_cast<size_t>(VOTE_DESC_LENGTH));
++		EXPECT_TRUE(str_utf8_check(pEntry->m_Description.c_str()));
++		if(pEntry->m_Kind == CMapVoteCatalog::EOptionKind::MAP)
++			MapDescriptions.insert(pEntry->m_Description);
++	}
++	EXPECT_EQ(MapDescriptions.size(), 2U);
++}
++
++TEST_F(CMapWarehouseTest, PublishesReadableArchiveGuideAndCollectionPages)
++{
++	WriteIndex(DefaultMaps());
++	CMapWarehouse Warehouse;
++	Load(&Warehouse);
++	const CMapWarehouse::SSearchResult Search = Warehouse.Search("*aip*race*", m_pStorage.get());
++	ASSERT_EQ(Search.m_Status, CMapWarehouse::ESearchStatus::CREATED);
++	CreateCoreMapCatalog();
++
++	CMapVoteCatalog Catalog;
++	std::string Error;
++	ASSERT_TRUE(Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Warehouse, &Error)) << Error;
++	using EKind = CMapVoteCatalog::EOptionKind;
++	using EPage = CMapVoteCatalog::EPage;
++	const CMapVoteCatalog::SPageId Root{EPage::ROOT, -1};
++	const CMapVoteCatalog::SPageId Hub{EPage::WAREHOUSE, -1};
++	const CMapVoteCatalog::SPageId Guide{EPage::WAREHOUSE_GUIDE, -1};
++	const CMapVoteCatalog::SPageId Collection{EPage::WAREHOUSE_COLLECTION, Search.m_CollectionId, 0};
++
++	ASSERT_EQ(Catalog.OptionCount(Root), 6);
++	const CMapVoteCatalog::SEntry *pArchive = Catalog.OptionAt(Root, 0);
++	ASSERT_NE(pArchive, nullptr);
++	EXPECT_EQ(pArchive->m_Kind, EKind::FOLDER);
++	EXPECT_EQ(pArchive->m_Description, "Search 6 archive maps  ›");
++	EXPECT_EQ(pArchive->m_TargetPage, Hub);
++
++	ASSERT_EQ(Catalog.OptionCount(Hub), 5);
++	EXPECT_EQ(Catalog.OptionAt(Hub, 1)->m_Kind, EKind::INFO);
++	EXPECT_EQ(Catalog.OptionAt(Hub, 1)->m_Description, "━━  Historical Map Archive  ━━");
++	EXPECT_EQ(Catalog.OptionAt(Hub, 2)->m_Description, "6 names · 5 unique maps");
++	EXPECT_EQ(Catalog.OptionAt(Hub, 3)->m_TargetPage, Guide);
++	EXPECT_EQ(Catalog.OptionAt(Hub, 3)->m_Description, "Search guide & syntax  ›");
++	EXPECT_EQ(Catalog.OptionAt(Hub, 4)->m_Description, "AIP · Race · 2 maps  ›");
++	EXPECT_EQ(Catalog.OptionAt(Hub, 4)->m_TargetPage, Collection);
++	EXPECT_EQ(Catalog.OptionCount(Guide), 8);
++
++	ASSERT_EQ(Catalog.OptionCount(Collection), 5);
++	EXPECT_EQ(Catalog.OptionAt(Collection, 0)->m_Kind, EKind::BACK);
++	EXPECT_EQ(Catalog.OptionAt(Collection, 1)->m_Kind, EKind::INFO);
++	EXPECT_EQ(Catalog.OptionAt(Collection, 2)->m_Description, "2 maps · page 1 of 1");
++	for(int Index = 3; Index < Catalog.OptionCount(Collection); ++Index)
++	{
++		const CMapVoteCatalog::SEntry *pMap = Catalog.OptionAt(Collection, Index);
++		ASSERT_NE(pMap, nullptr);
++		EXPECT_EQ(pMap->m_Kind, EKind::MAP);
++		EXPECT_TRUE(str_startswith(pMap->m_Description.c_str(), "• "));
++		char aCommand[VOTE_CMD_LENGTH];
++		ASSERT_TRUE(Catalog.ResolveCommand(*pMap, aCommand, sizeof(aCommand)));
++		EXPECT_TRUE(str_startswith(aCommand, "warehouse_map "));
++	}
 +}
 -- 
 2.53.0

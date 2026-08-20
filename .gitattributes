@@ -1,0 +1,2 @@
+# Generated email patches contain diff-context whitespace from upstream files.
+patches/*.patch -whitespace
