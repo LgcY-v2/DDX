@@ -15,6 +15,8 @@ The map corpus has one authority: `/srv/multi_tas/data/maps`. This server reads
 all 3,511 DDRace, Gores, and root maps directly from that path. It does not copy
 or synchronize the corpus. Map votes are rebuilt automatically after every map
 change, and random DDRace, Gores, and archive choices use the same catalog.
+Each connected player keeps their exact vote-menu folder, archive collection,
+page, and sort choice through map changes.
 
 ## Layout
 
@@ -61,6 +63,12 @@ The Map Archive vote section searches 55,250 historical filenames backed by
 creating one does not extract maps. A selected map is extracted only after its
 vote passes, verified by SHA-256, and atomically published into a bounded
 content-addressed cache.
+
+Each archive collection can be sorted by map name, archive date, or verified
+file size in both directions. Date views show Heinrich5991's earliest visible
+file date for identical map content; this is archive metadata, not a claimed
+release date. Maps without a visible date remain available and sort after maps
+with known dates.
 
 `★ Random archive map` samples uniformly from distinct non-empty archive
 contents, so historical aliases do not make a map more likely. A successful

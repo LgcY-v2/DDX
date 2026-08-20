@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import html
 import os
@@ -19,6 +20,24 @@ from pathlib import Path
 
 MAP_PATH_RE = re.compile(rb"^(.*)_([0-9a-f]{64})\.map$")
 HTML_ENTRY_RE = re.compile(rb'href="([^"]+\.map)".*?</a>\s+\S+\s+\S+\s+(\d+)\s*$')
+HEINRICH_DIRECTORY_ENTRY_RE = re.compile(
+    rb'href="([^"]+\.map)".*?</a>\s+'
+    rb'(\d{2})-([A-Z][a-z]{2})-(\d{4})\s+(\d{2}):(\d{2})\s+(\d+)\s*$'
+)
+MONTHS = {
+    b"Jan": 1,
+    b"Feb": 2,
+    b"Mar": 3,
+    b"Apr": 4,
+    b"May": 5,
+    b"Jun": 6,
+    b"Jul": 7,
+    b"Aug": 8,
+    b"Sep": 9,
+    b"Oct": 10,
+    b"Nov": 11,
+    b"Dec": 12,
+}
 
 
 @dataclass(frozen=True)
@@ -132,6 +151,41 @@ def parse_heinrich_listing(path: Path) -> list[bytes]:
     return entries
 
 
+def parse_heinrich_directory(path: Path) -> dict[bytes, tuple[int, int]]:
+    result: dict[bytes, tuple[int, int]] = {}
+    for line_number, line in enumerate(path.read_bytes().splitlines(), start=1):
+        if b'href="' not in line or b".map" not in line:
+            continue
+        match = HEINRICH_DIRECTORY_ENTRY_RE.search(line)
+        if match is None:
+            raise ValueError(f"malformed Heinrich directory entry on line {line_number}: {line!r}")
+        href = html.unescape(match.group(1).decode("ascii"))
+        member = urllib.parse.unquote_to_bytes(href)
+        if MAP_PATH_RE.fullmatch(member) is None:
+            raise ValueError(f"invalid Heinrich directory member on line {line_number}: {member!r}")
+        day = int(match.group(2))
+        month = MONTHS.get(match.group(3))
+        year = int(match.group(4))
+        hour = int(match.group(5))
+        minute = int(match.group(6))
+        if month is None:
+            raise ValueError(f"invalid Heinrich directory month on line {line_number}")
+        try:
+            timestamp = dt.datetime(year, month, day, hour, minute)
+        except ValueError as error:
+            raise ValueError(f"invalid Heinrich directory date on line {line_number}: {error}") from error
+        if not 2000 <= timestamp.year <= 2100:
+            raise ValueError(f"implausible Heinrich directory date on line {line_number}: {timestamp}")
+        archive_date = int(timestamp.strftime("%Y%m%d%H%M"))
+        size = int(match.group(7))
+        if member in result:
+            raise ValueError(f"duplicate Heinrich directory member on line {line_number}: {member!r}")
+        result[member] = (archive_date, size)
+    if not result:
+        raise ValueError("Heinrich directory listing contains no map entries")
+    return result
+
+
 def write_atomic(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
@@ -148,12 +202,20 @@ def main() -> int:
     parser.add_argument("--extractor", type=Path, required=True)
     parser.add_argument("--mirror-listing", type=Path, required=True)
     parser.add_argument("--heinrich-listing", type=Path, required=True)
+    parser.add_argument("--heinrich-directory-listing", type=Path, required=True)
     parser.add_argument("--delta-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--metadata-output", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
 
-    for required in (args.archive, args.extractor, args.mirror_listing, args.heinrich_listing):
+    for required in (
+        args.archive,
+        args.extractor,
+        args.mirror_listing,
+        args.heinrich_listing,
+        args.heinrich_directory_listing,
+    ):
         if not required.is_file():
             parser.error(f"required file does not exist: {required}")
     if not args.delta_dir.is_dir():
@@ -163,6 +225,7 @@ def main() -> int:
     archive_sha256 = file_sha256(args.archive)
     mirror_sha256 = file_sha256(args.mirror_listing)
     heinrich_sha256 = file_sha256(args.heinrich_listing)
+    heinrich_directory_sha256 = file_sha256(args.heinrich_directory_listing)
 
     archive_entries = parse_archive(args.extractor, args.archive)
     archive_by_path: dict[bytes, ArchiveEntry] = {}
@@ -193,6 +256,12 @@ def main() -> int:
     archive_hashes = set(archive_by_hash)
     heinrich_hashes = {MAP_PATH_RE.fullmatch(entry).group(2).decode("ascii") for entry in heinrich_entries}  # type: ignore[union-attr]
     heinrich_missing_hashes = sorted(heinrich_hashes - archive_hashes)
+    heinrich_directory_entries = parse_heinrich_directory(args.heinrich_directory_listing)
+    extra_directory_entries = sorted(set(heinrich_directory_entries) - set(heinrich_entries))
+    if extra_directory_entries:
+        raise ValueError(
+            f"Heinrich directory contains {len(extra_directory_entries)} entries absent from its authority listing"
+        )
 
     delta_by_hash: dict[str, tuple[bytes, int]] = {}
     for delta_path in sorted(args.delta_dir.iterdir()):
@@ -216,6 +285,26 @@ def main() -> int:
             "delta does not exactly repair Heinrich coverage: "
             f"uncovered={len(uncovered_hashes)}, unused={len(unused_delta_hashes)}"
         )
+
+    content_sizes = {
+        content_hash: entries[0].size for content_hash, entries in archive_by_hash.items()
+    }
+    content_sizes.update({content_hash: value[1] for content_hash, value in delta_by_hash.items()})
+    dates_by_hash: dict[str, list[int]] = {}
+    for member, (archive_date, listed_size) in heinrich_directory_entries.items():
+        match = MAP_PATH_RE.fullmatch(member)
+        assert match is not None
+        content_hash = match.group(2).decode("ascii")
+        expected_size = content_sizes.get(content_hash)
+        if expected_size is None or expected_size != listed_size:
+            raise ValueError(
+                f"Heinrich directory size disagrees with verified content {content_hash}: "
+                f"listed={listed_size}, verified={expected_size}"
+            )
+        dates_by_hash.setdefault(content_hash, []).append(archive_date)
+    earliest_dates = {
+        content_hash: min(dates) for content_hash, dates in dates_by_hash.items()
+    }
 
     indexed_entries: list[tuple[bytes, str, int, str, bytes]] = []
     for alias in heinrich_entries:
@@ -276,6 +365,22 @@ def main() -> int:
     index_content = ("\n".join(lines) + "\n").encode("ascii")
     write_atomic(args.output, index_content)
 
+    metadata_lines = [
+        "TW_MAP_WAREHOUSE_METADATA\t1",
+        f"authority_listing_sha256\t{heinrich_sha256}",
+        f"directory_listing_sha256\t{heinrich_directory_sha256}",
+        f"map_entries\t{len(heinrich_entries)}",
+        f"dated_entries\t{len(heinrich_directory_entries)}",
+        f"unique_content\t{len(heinrich_hashes)}",
+        f"dated_content\t{len(earliest_dates)}",
+        "date_semantics\tearliest_visible_alias_file_mtime",
+        "",
+    ]
+    for content_hash in sorted(earliest_dates):
+        metadata_lines.append(f"D\t{content_hash}\t{earliest_dates[content_hash]:012d}")
+    metadata_content = ("\n".join(metadata_lines) + "\n").encode("ascii")
+    write_atomic(args.metadata_output, metadata_content)
+
     block_counts = Counter(entry.block for entry in archive_entries)
     block_bytes = Counter()
     for entry in archive_entries:
@@ -300,7 +405,13 @@ def main() -> int:
         f"- Heinrich distinct hashes in the archive: `{len(heinrich_hashes) - len(heinrich_missing_hashes)}`",
         f"- Heinrich distinct hashes repaired by verified delta: `{len(delta_by_hash)}`",
         f"- Heinrich distinct hashes covered in total: `{len(heinrich_hashes)}`",
+        f"- Heinrich directory SHA-256: `{heinrich_directory_sha256}`",
+        f"- Heinrich directory aliases with a listed date: `{len(heinrich_directory_entries)}`",
+        f"- Heinrich distinct hashes with a listed date: `{len(earliest_dates)}`",
+        f"- Heinrich distinct hashes without a listed date: `{len(heinrich_hashes) - len(earliest_dates)}`",
+        f"- Content hashes whose aliases have different listed dates: `{sum(len(set(dates)) > 1 for dates in dates_by_hash.values())}`",
         f"- Runtime index SHA-256: `{hashlib.sha256(index_content).hexdigest()}`",
+        f"- Runtime metadata SHA-256: `{hashlib.sha256(metadata_content).hexdigest()}`",
         "",
         "## Solid blocks",
         "",
