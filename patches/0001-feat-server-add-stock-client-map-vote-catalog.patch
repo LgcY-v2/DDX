@@ -1,22 +1,22 @@
-From 5023128b7bf93396513aa60b95dc94139fffb948 Mon Sep 17 00:00:00 2001
+From 1be4d18fa2b6a7193ee0e8e77303cb348c7eb28d Mon Sep 17 00:00:00 2001
 From: root <root@vps-b11ef210.vps.ovh.net>
-Date: Thu, 20 Aug 2026 02:54:46 +0000
-Subject: [PATCH] feat(server): add verified historical map search
+Date: Thu, 20 Aug 2026 03:25:48 +0000
+Subject: [PATCH] feat(server): add polished map voting and archive search
 
 ---
  CMakeLists.txt                       |    6 +
  src/engine/shared/config_variables.h |    9 +
  src/game/server/gamecontext.cpp      |  397 ++++++++-
  src/game/server/gamecontext.h        |   14 +
- src/game/server/map_vote_catalog.cpp |  661 +++++++++++++++
- src/game/server/map_vote_catalog.h   |  119 +++
+ src/game/server/map_vote_catalog.cpp |  684 ++++++++++++++++
+ src/game/server/map_vote_catalog.h   |  121 +++
  src/game/server/map_warehouse.cpp    | 1109 ++++++++++++++++++++++++++
  src/game/server/map_warehouse.h      |  106 +++
  src/game/server/player.cpp           |    5 +
  src/game/server/player.h             |    5 +
  src/test/map_vote_catalog_test.cpp   |  285 +++++++
- src/test/map_warehouse_test.cpp      |  416 ++++++++++
- 12 files changed, 3106 insertions(+), 26 deletions(-)
+ src/test/map_warehouse_test.cpp      |  454 +++++++++++
+ 12 files changed, 3169 insertions(+), 26 deletions(-)
  create mode 100644 src/game/server/map_vote_catalog.cpp
  create mode 100644 src/game/server/map_vote_catalog.h
  create mode 100644 src/game/server/map_warehouse.cpp
@@ -682,10 +682,10 @@ index bc1ec17..e1493a8 100644
  	void LoadMapSettings();
 diff --git a/src/game/server/map_vote_catalog.cpp b/src/game/server/map_vote_catalog.cpp
 new file mode 100644
-index 0000000..5361c56
+index 0000000..f6ceb68
 --- /dev/null
 +++ b/src/game/server/map_vote_catalog.cpp
-@@ -0,0 +1,661 @@
+@@ -0,0 +1,684 @@
 +#include "map_vote_catalog.h"
 +
 +#include "map_warehouse.h"
@@ -702,6 +702,7 @@ index 0000000..5361c56
 +
 +#include <algorithm>
 +#include <cctype>
++#include <unordered_set>
 +#include <utility>
 +#include <vector>
 +
@@ -821,6 +822,7 @@ index 0000000..5361c56
 +	m_vWarehousePage.clear();
 +	m_vWarehouseGuidePage.clear();
 +	m_vWarehouseCollections.clear();
++	m_vWarehouseRandomHashes.clear();
 +	m_WarehouseAliases = 0;
 +	m_WarehouseUniqueMaps = 0;
 +}
@@ -928,6 +930,15 @@ index 0000000..5361c56
 +	{
 +		Candidate.m_WarehouseAliases = pWarehouse->AliasCount();
 +		Candidate.m_WarehouseUniqueMaps = pWarehouse->UniqueMapCount();
++		std::unordered_set<std::string> SeenHashes;
++		SeenHashes.reserve(pWarehouse->UniqueMapCount());
++		Candidate.m_vWarehouseRandomHashes.reserve(pWarehouse->UniqueMapCount());
++		for(int MapIndex = 0; MapIndex < pWarehouse->AliasCount(); ++MapIndex)
++		{
++			const CMapWarehouse::SMap *pMap = pWarehouse->Map(MapIndex);
++			if(pMap && pMap->m_Size > 0 && SeenHashes.insert(pMap->m_Hash).second)
++				Candidate.m_vWarehouseRandomHashes.push_back(pMap->m_Hash);
++		}
 +	}
 +	if(!Candidate.BuildWarehousePages(pWarehouse, pError) || !Candidate.BuildPages(pError))
 +		return false;
@@ -990,6 +1001,8 @@ index 0000000..5361c56
 +		Random("★ Random Gores map", ECategory::GORES, -1),
 +	};
 +	m_vRootPage.insert(m_vRootPage.end(), vCoreRoot.begin(), vCoreRoot.end());
++	if(!m_vWarehouseRandomHashes.empty())
++		m_vRootPage.push_back(Random("★ Random archive map", ECategory::WAREHOUSE, -1));
 +
 +	m_vDdracePage.push_back(Back("‹  Back to map categories", {EPage::ROOT, -1}));
 +	for(int TypeIndex = 0; TypeIndex < static_cast<int>(m_vDdraceTypes.size()); ++TypeIndex)
@@ -1293,10 +1306,20 @@ index 0000000..5361c56
 +		str_copy(pCommand, Entry.m_Command.c_str(), CommandSize);
 +		return true;
 +	}
-+	if(Entry.m_Kind != EOptionKind::RANDOM || Entry.m_RandomCategory < 0 || Entry.m_RandomCategory > 1)
++	if(Entry.m_Kind != EOptionKind::RANDOM || Entry.m_RandomCategory < 0 || Entry.m_RandomCategory > static_cast<int>(ECategory::WAREHOUSE))
 +		return false;
 +
 +	const ECategory Category = static_cast<ECategory>(Entry.m_RandomCategory);
++	if(Category == ECategory::WAREHOUSE)
++	{
++		if(Entry.m_RandomType != -1 || m_vWarehouseRandomHashes.empty())
++			return false;
++		const std::string Command = WarehouseMapCommand(m_vWarehouseRandomHashes[secure_rand_below(static_cast<int>(m_vWarehouseRandomHashes.size()))]);
++		if(Command.size() >= static_cast<size_t>(CommandSize))
++			return false;
++		str_copy(pCommand, Command.c_str(), CommandSize);
++		return true;
++	}
 +	const std::vector<SType> &vTypes = Types(Category);
 +	int Total = 0;
 +	if(Entry.m_RandomType >= 0)
@@ -1349,10 +1372,10 @@ index 0000000..5361c56
 +}
 diff --git a/src/game/server/map_vote_catalog.h b/src/game/server/map_vote_catalog.h
 new file mode 100644
-index 0000000..7463d88
+index 0000000..f76f43c
 --- /dev/null
 +++ b/src/game/server/map_vote_catalog.h
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,121 @@
 +#ifndef GAME_SERVER_MAP_VOTE_CATALOG_H
 +#define GAME_SERVER_MAP_VOTE_CATALOG_H
 +
@@ -1426,6 +1449,7 @@ index 0000000..7463d88
 +	{
 +		DDRACE = 0,
 +		GORES,
++		WAREHOUSE,
 +	};
 +
 +	struct SMap
@@ -1461,6 +1485,7 @@ index 0000000..7463d88
 +	std::vector<SEntry> m_vWarehousePage{};
 +	std::vector<SEntry> m_vWarehouseGuidePage{};
 +	std::vector<SWarehouseCollection> m_vWarehouseCollections{};
++	std::vector<std::string> m_vWarehouseRandomHashes{};
 +	int m_WarehouseAliases = 0;
 +	int m_WarehouseUniqueMaps = 0;
 +
@@ -3024,10 +3049,10 @@ index 0000000..fc58a46
 +}
 diff --git a/src/test/map_warehouse_test.cpp b/src/test/map_warehouse_test.cpp
 new file mode 100644
-index 0000000..5f13f31
+index 0000000..93485ae
 --- /dev/null
 +++ b/src/test/map_warehouse_test.cpp
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,454 @@
 +#include "test.h"
 +
 +#include <base/io.h>
@@ -3412,12 +3437,16 @@ index 0000000..5f13f31
 +	const CMapVoteCatalog::SPageId Guide{EPage::WAREHOUSE_GUIDE, -1};
 +	const CMapVoteCatalog::SPageId Collection{EPage::WAREHOUSE_COLLECTION, Search.m_CollectionId, 0};
 +
-+	ASSERT_EQ(Catalog.OptionCount(Root), 6);
++	ASSERT_EQ(Catalog.OptionCount(Root), 7);
 +	const CMapVoteCatalog::SEntry *pArchive = Catalog.OptionAt(Root, 0);
 +	ASSERT_NE(pArchive, nullptr);
 +	EXPECT_EQ(pArchive->m_Kind, EKind::FOLDER);
 +	EXPECT_EQ(pArchive->m_Description, "Search 6 archive maps  ›");
 +	EXPECT_EQ(pArchive->m_TargetPage, Hub);
++	const CMapVoteCatalog::SEntry *pRandomArchive = Catalog.OptionAt(Root, 6);
++	ASSERT_NE(pRandomArchive, nullptr);
++	EXPECT_EQ(pRandomArchive->m_Kind, EKind::RANDOM);
++	EXPECT_EQ(pRandomArchive->m_Description, "★ Random archive map");
 +
 +	ASSERT_EQ(Catalog.OptionCount(Hub), 5);
 +	EXPECT_EQ(Catalog.OptionAt(Hub, 1)->m_Kind, EKind::INFO);
@@ -3443,6 +3472,40 @@ index 0000000..5f13f31
 +		ASSERT_TRUE(Catalog.ResolveCommand(*pMap, aCommand, sizeof(aCommand)));
 +		EXPECT_TRUE(str_startswith(aCommand, "warehouse_map "));
 +	}
++}
++
++TEST_F(CMapWarehouseTest, RandomArchiveMapUsesDistinctNonEmptyContents)
++{
++	WriteIndex({{"Playable", TestHash(1), 10}, {"Playable alias", TestHash(1), 10}, {"Empty", TestHash(2), 0}});
++	CMapWarehouse Warehouse;
++	Load(&Warehouse);
++	CreateCoreMapCatalog();
++
++	CMapVoteCatalog Catalog;
++	std::string Error;
++	ASSERT_TRUE(Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Warehouse, &Error)) << Error;
++	const CMapVoteCatalog::SPageId Root{CMapVoteCatalog::EPage::ROOT, -1};
++	const CMapVoteCatalog::SEntry *pRandomArchive = Catalog.Find(Root, "★ Random archive map");
++	ASSERT_NE(pRandomArchive, nullptr);
++	EXPECT_EQ(Catalog.OptionCount(Root), 7);
++
++	char aCommand[VOTE_CMD_LENGTH];
++	ASSERT_TRUE(Catalog.ResolveCommand(*pRandomArchive, aCommand, sizeof(aCommand)));
++	EXPECT_EQ(aCommand, "warehouse_map \"" + TestHash(1) + "\"");
++
++	CMapVoteCatalog::SEntry Forged = *pRandomArchive;
++	Forged.m_RandomType = 0;
++	EXPECT_FALSE(Catalog.ResolveCommand(Forged, aCommand, sizeof(aCommand)));
++	EXPECT_STREQ(aCommand, "");
++	EXPECT_FALSE(Catalog.ResolveCommand(*pRandomArchive, aCommand, 8));
++	EXPECT_STREQ(aCommand, "");
++
++	WriteIndex({{"Empty", TestHash(2), 0}});
++	CMapWarehouse EmptyWarehouse;
++	Load(&EmptyWarehouse);
++	ASSERT_TRUE(Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &EmptyWarehouse, &Error)) << Error;
++	EXPECT_EQ(Catalog.OptionCount(Root), 6);
++	EXPECT_EQ(Catalog.Find(Root, "★ Random archive map"), nullptr);
 +}
 -- 
 2.53.0

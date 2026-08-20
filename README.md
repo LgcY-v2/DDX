@@ -14,7 +14,7 @@ controller, which advertises the `DDraceNetwork` game type.
 The map corpus has one authority: `/srv/multi_tas/data/maps`. This server reads
 all 3,511 DDRace, Gores, and root maps directly from that path. It does not copy
 or synchronize the corpus. Map votes are rebuilt automatically after every map
-change, and random DDRace and Gores choices use the same catalog.
+change, and random DDRace, Gores, and archive choices use the same catalog.
 
 ## Layout
 
@@ -61,6 +61,11 @@ The Map Archive vote section searches 55,250 historical filenames backed by
 creating one does not extract maps. A selected map is extracted only after its
 vote passes, verified by SHA-256, and atomically published into a bounded
 content-addressed cache.
+
+`★ Random archive map` samples uniformly from distinct non-empty archive
+contents, so historical aliases do not make a map more likely. A successful
+vote uses the same verified, on-demand extraction path as a searched archive
+map.
 
 Chat syntax:
 
