@@ -1,0 +1,299 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LgcY-v2 <menhardandre@gmail.com>
+Date: Fri, 21 Aug 2026 21:07:45 +0000
+Subject: [PATCH 3/8] feat: add random archive collection maps
+
+---
+ src/game/server/map_vote_catalog.cpp |  41 +++++++-
+ src/game/server/map_vote_catalog.h   |   2 +
+ src/test/map_archive_test.cpp        | 139 ++++++++++++++++++++++++---
+ 3 files changed, 169 insertions(+), 13 deletions(-)
+
+diff --git a/src/game/server/map_vote_catalog.cpp b/src/game/server/map_vote_catalog.cpp
+index b28dcb1..0bbbf21 100644
+--- a/src/game/server/map_vote_catalog.cpp
++++ b/src/game/server/map_vote_catalog.cpp
+@@ -485,6 +485,14 @@ bool CMapVoteCatalog::BuildArchivePages(const CMapArchive *pArchive, std::string
+ 		Entry.m_InfoText = Text;
+ 		return Entry;
+ 	};
++	auto Random = [](const char *pLabel, int CollectionId) {
++		SEntry Entry;
++		Entry.m_Kind = EOptionKind::RANDOM;
++		Entry.m_Description = pLabel;
++		Entry.m_RandomCategory = static_cast<int>(ECategory::ARCHIVE_COLLECTION);
++		Entry.m_RandomType = CollectionId;
++		return Entry;
++	};
+ 
+ 	m_vArchivePage.push_back(Back("‹  Back to map categories", {EPage::ROOT, -1}));
+ 	m_vArchivePage.push_back(Info("━━  Historical Map Archive  ━━", "Search 55,250 historical map names without unpacking the archive."));
+@@ -519,12 +527,22 @@ bool CMapVoteCatalog::BuildArchivePages(const CMapArchive *pArchive, std::string
+ 		m_vArchivePage.push_back(Navigation(FolderLabel, {EPage::ARCHIVE_COLLECTION, Collection.m_Id, 0}));
+ 
+ 		std::vector<int> vBaseMapIndices = ArchiveCollection.m_vMapIndices;
++		std::unordered_set<std::string> SeenHashes;
++		SeenHashes.reserve(vBaseMapIndices.size());
++		Collection.m_vRandomHashes.reserve(vBaseMapIndices.size());
+ 		for(int MapIndex : vBaseMapIndices)
+-			if(!pArchive->Map(MapIndex))
++		{
++			const CMapArchive::SMap *pMap = pArchive->Map(MapIndex);
++			if(!pMap)
+ 			{
+ 				SetError(pError, "an archive collection references an unknown map");
+ 				return false;
+ 			}
++			if(pMap->m_Size > 0 && SeenHashes.insert(pMap->m_Hash).second)
++				Collection.m_vRandomHashes.push_back(pMap->m_Hash);
++		}
++		const int RandomAffixBytes = str_length("★ Random ") + str_length(" map");
++		const std::string RandomLabel = "★ Random " + TruncateLabel(Collection.m_Name, VOTE_DESC_LENGTH - 1 - RandomAffixBytes) + " map";
+ 		const int PageCount = (static_cast<int>(vBaseMapIndices.size()) + MAPS_PER_PAGE - 1) / MAPS_PER_PAGE;
+ 		const int DatedMaps = static_cast<int>(std::count_if(vBaseMapIndices.begin(), vBaseMapIndices.end(), [&](int MapIndex) {
+ 			return pArchive->Map(MapIndex)->m_ArchiveDate != 0;
+@@ -577,6 +595,8 @@ bool CMapVoteCatalog::BuildArchivePages(const CMapArchive *pArchive, std::string
+ 			{
+ 				std::vector<SEntry> &vPage = vPages[PageIndex];
+ 				vPage.push_back(Back("‹  Back to archive collections", {EPage::ARCHIVE, -1}));
++				if(!Collection.m_vRandomHashes.empty())
++					vPage.push_back(Random(RandomLabel.c_str(), Collection.m_Id));
+ 				const std::string Header = "━━  " + TruncateLabel(Collection.m_Name, 46) + "  ━━";
+ 				vPage.push_back(Info(Header, "Search: " + Collection.m_Query));
+ 				vPage.push_back(Navigation(std::string("Sort: ") + SortName(Sort) + "  ›", {EPage::ARCHIVE_SORT, Collection.m_Id, PageIndex, Sort}));
+@@ -798,7 +818,7 @@ bool CMapVoteCatalog::ResolveCommand(const SEntry &Entry, char *pCommand, int Co
+ 		str_copy(pCommand, Entry.m_Command.c_str(), CommandSize);
+ 		return true;
+ 	}
+-	if(Entry.m_Kind != EOptionKind::RANDOM || Entry.m_RandomCategory < 0 || Entry.m_RandomCategory > static_cast<int>(ECategory::ARCHIVE))
++	if(Entry.m_Kind != EOptionKind::RANDOM || Entry.m_RandomCategory < 0 || Entry.m_RandomCategory > static_cast<int>(ECategory::ARCHIVE_COLLECTION))
+ 		return false;
+ 
+ 	const ECategory Category = static_cast<ECategory>(Entry.m_RandomCategory);
+@@ -812,6 +832,23 @@ bool CMapVoteCatalog::ResolveCommand(const SEntry &Entry, char *pCommand, int Co
+ 		str_copy(pCommand, Command.c_str(), CommandSize);
+ 		return true;
+ 	}
++	if(Category == ECategory::ARCHIVE_COLLECTION)
++	{
++		const SArchiveCollection *pCollection = nullptr;
++		for(const SArchiveCollection &Collection : m_vArchiveCollections)
++			if(Collection.m_Id == Entry.m_RandomType)
++			{
++				pCollection = &Collection;
++				break;
++			}
++		if(!pCollection || pCollection->m_vRandomHashes.empty())
++			return false;
++		const std::string Command = ArchiveMapCommand(pCollection->m_vRandomHashes[secure_rand_below(static_cast<int>(pCollection->m_vRandomHashes.size()))]);
++		if(Command.size() >= static_cast<size_t>(CommandSize))
++			return false;
++		str_copy(pCommand, Command.c_str(), CommandSize);
++		return true;
++	}
+ 	const std::vector<SType> &vTypes = Types(Category);
+ 	int Total = 0;
+ 	if(Entry.m_RandomType >= 0)
+diff --git a/src/game/server/map_vote_catalog.h b/src/game/server/map_vote_catalog.h
+index 2c08c8c..3d205a7 100644
+--- a/src/game/server/map_vote_catalog.h
++++ b/src/game/server/map_vote_catalog.h
+@@ -87,6 +87,7 @@ private:
+ 		DDRACE = 0,
+ 		GORES,
+ 		ARCHIVE,
++		ARCHIVE_COLLECTION,
+ 	};
+ 
+ 	struct SMap
+@@ -108,6 +109,7 @@ private:
+ 		int m_Id = -1;
+ 		std::string m_Name{};
+ 		std::string m_Query{};
++		std::vector<std::string> m_vRandomHashes{};
+ 		std::array<std::vector<std::vector<SEntry>>, static_cast<size_t>(ESort::COUNT)> m_avPages{};
+ 		std::array<std::vector<std::vector<SEntry>>, static_cast<size_t>(ESort::COUNT)> m_avSortPages{};
+ 	};
+diff --git a/src/test/map_archive_test.cpp b/src/test/map_archive_test.cpp
+index 2631701..a650169 100644
+--- a/src/test/map_archive_test.cpp
++++ b/src/test/map_archive_test.cpp
+@@ -406,7 +406,7 @@ TEST_F(CMapArchiveTest, LongUtf8MapNamesStayUniqueAndWithinVoteProtocolLimits)
+ 	std::string Error;
+ 	ASSERT_TRUE(Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Archive, &Error)) << Error;
+ 	const CMapVoteCatalog::SPageId Collection{CMapVoteCatalog::EPage::ARCHIVE_COLLECTION, Search.m_CollectionId, 0};
+-	ASSERT_EQ(Catalog.OptionCount(Collection), 6);
++	ASSERT_EQ(Catalog.OptionCount(Collection), 7);
+ 	std::set<std::string> MapDescriptions;
+ 	for(int Index = 0; Index < Catalog.OptionCount(Collection); ++Index)
+ 	{
+@@ -460,12 +460,19 @@ TEST_F(CMapArchiveTest, PublishesReadableArchiveGuideAndCollectionPages)
+ 	EXPECT_EQ(Catalog.OptionAt(Hub, 4)->m_TargetPage, Collection);
+ 	EXPECT_EQ(Catalog.OptionCount(Guide), 8);
+ 
+-	ASSERT_EQ(Catalog.OptionCount(Collection), 6);
++	ASSERT_EQ(Catalog.OptionCount(Collection), 7);
+ 	EXPECT_EQ(Catalog.OptionAt(Collection, 0)->m_Kind, EKind::BACK);
+-	EXPECT_EQ(Catalog.OptionAt(Collection, 1)->m_Kind, EKind::INFO);
+-	EXPECT_EQ(Catalog.OptionAt(Collection, 2)->m_Description, "Sort: Map name · A–Z  ›");
+-	EXPECT_EQ(Catalog.OptionAt(Collection, 3)->m_Description, "2 maps · page 1 of 1");
+-	for(int Index = 4; Index < Catalog.OptionCount(Collection); ++Index)
++	const CMapVoteCatalog::SEntry *pCollectionRandom = Catalog.OptionAt(Collection, 1);
++	ASSERT_NE(pCollectionRandom, nullptr);
++	EXPECT_EQ(pCollectionRandom->m_Kind, EKind::RANDOM);
++	EXPECT_EQ(pCollectionRandom->m_Description, "★ Random AIP · Race map");
++	char aRandomCommand[VOTE_CMD_LENGTH];
++	ASSERT_TRUE(Catalog.ResolveCommand(*pCollectionRandom, aRandomCommand, sizeof(aRandomCommand)));
++	EXPECT_TRUE(str_startswith(aRandomCommand, "archive_map \""));
++	EXPECT_EQ(Catalog.OptionAt(Collection, 2)->m_Kind, EKind::INFO);
++	EXPECT_EQ(Catalog.OptionAt(Collection, 3)->m_Description, "Sort: Map name · A–Z  ›");
++	EXPECT_EQ(Catalog.OptionAt(Collection, 4)->m_Description, "2 maps · page 1 of 1");
++	for(int Index = 5; Index < Catalog.OptionCount(Collection); ++Index)
+ 	{
+ 		const CMapVoteCatalog::SEntry *pMap = Catalog.OptionAt(Collection, Index);
+ 		ASSERT_NE(pMap, nullptr);
+@@ -512,10 +519,10 @@ TEST_F(CMapArchiveTest, LoadsContentDatesAndPublishesDeterministicPerPlayerSortP
+ 	ASSERT_NE(pNewest, nullptr);
+ 	const CMapVoteCatalog::SPageId NewestPage{EPage::ARCHIVE_COLLECTION, Search.m_CollectionId, 0, ESort::DATE_NEWEST};
+ 	EXPECT_EQ(pNewest->m_TargetPage, NewestPage);
+-	EXPECT_EQ(Catalog.OptionAt(NewestPage, 2)->m_Description, "Sort: Newest archive date  ›");
++	EXPECT_EQ(Catalog.OptionAt(NewestPage, 3)->m_Description, "Sort: Newest archive date  ›");
+ 
+ 	auto ExpectHashes = [&](CMapVoteCatalog::SPageId Page, std::initializer_list<std::string> Hashes) {
+-		int OptionIndex = 4;
++		int OptionIndex = 5;
+ 		for(const std::string &Hash : Hashes)
+ 		{
+ 			const CMapVoteCatalog::SEntry *pEntry = Catalog.OptionAt(Page, OptionIndex++);
+@@ -526,14 +533,14 @@ TEST_F(CMapArchiveTest, LoadsContentDatesAndPublishesDeterministicPerPlayerSortP
+ 		}
+ 	};
+ 	ExpectHashes(NewestPage, {TestHash(4), TestHash(1), TestHash(2), TestHash(3)});
+-	EXPECT_TRUE(str_endswith(Catalog.OptionAt(NewestPage, 4)->m_Description.c_str(), " · 2023-03-04"));
+-	EXPECT_TRUE(str_endswith(Catalog.OptionAt(NewestPage, 7)->m_Description.c_str(), " · date unknown"));
++	EXPECT_TRUE(str_endswith(Catalog.OptionAt(NewestPage, 5)->m_Description.c_str(), " · 2023-03-04"));
++	EXPECT_TRUE(str_endswith(Catalog.OptionAt(NewestPage, 8)->m_Description.c_str(), " · date unknown"));
+ 
+ 	const CMapVoteCatalog::SPageId OldestPage{EPage::ARCHIVE_COLLECTION, Search.m_CollectionId, 0, ESort::DATE_OLDEST};
+ 	ExpectHashes(OldestPage, {TestHash(2), TestHash(1), TestHash(4), TestHash(3)});
+ 	const CMapVoteCatalog::SPageId LargestPage{EPage::ARCHIVE_COLLECTION, Search.m_CollectionId, 0, ESort::SIZE_LARGEST};
+ 	ExpectHashes(LargestPage, {TestHash(2), TestHash(3), TestHash(4), TestHash(1)});
+-	EXPECT_TRUE(str_endswith(Catalog.OptionAt(LargestPage, 4)->m_Description.c_str(), " · 900 B"));
++	EXPECT_TRUE(str_endswith(Catalog.OptionAt(LargestPage, 5)->m_Description.c_str(), " · 900 B"));
+ 	const CMapVoteCatalog::SPageId NameDescPage{EPage::ARCHIVE_COLLECTION, Search.m_CollectionId, 0, ESort::NAME_DESC};
+ 	ExpectHashes(NameDescPage, {TestHash(4), TestHash(3), TestHash(2), TestHash(1)});
+ 
+@@ -599,3 +606,113 @@ TEST_F(CMapArchiveTest, RandomArchiveMapUsesDistinctNonEmptyContents)
+ 	EXPECT_EQ(Catalog.OptionCount(Root), 6);
+ 	EXPECT_EQ(Catalog.Find(Root, "★ Random archive map"), nullptr);
+ }
++
++TEST_F(CMapArchiveTest, CollectionRandomUsesOnlyEligibleContents)
++{
++	WriteIndex(DefaultMaps());
++	CMapArchive Archive;
++	Load(&Archive);
++	const CMapArchive::SSearchResult Search = Archive.Search("*aip*race*", m_pStorage.get());
++	ASSERT_EQ(Search.m_Status, CMapArchive::ESearchStatus::CREATED);
++	CreateCoreMapCatalog();
++
++	CMapVoteCatalog Catalog;
++	std::string Error;
++	ASSERT_TRUE(Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Archive, &Error)) << Error;
++	using EKind = CMapVoteCatalog::EOptionKind;
++	const CMapVoteCatalog::SPageId Collection{CMapVoteCatalog::EPage::ARCHIVE_COLLECTION, Search.m_CollectionId, 0};
++
++	const CMapVoteCatalog::SEntry *pRandom = Catalog.Find(Collection, "★ Random AIP · Race map");
++	ASSERT_NE(pRandom, nullptr);
++	EXPECT_EQ(pRandom->m_Kind, EKind::RANDOM);
++
++	const std::set<std::string> ExpectedCommands{
++		"archive_map \"" + TestHash(1) + "\"",
++		"archive_map \"" + TestHash(3) + "\""};
++	constexpr int Samples = 32;
++	for(int Index = 0; Index < Samples; ++Index)
++	{
++		char aCommand[VOTE_CMD_LENGTH];
++		ASSERT_TRUE(Catalog.ResolveCommand(*pRandom, aCommand, sizeof(aCommand)));
++		EXPECT_EQ(ExpectedCommands.count(aCommand), 1U);
++	}
++
++	CMapVoteCatalog::SEntry UnknownCollection = *pRandom;
++	UnknownCollection.m_RandomType = 9999;
++	char aCommand[VOTE_CMD_LENGTH];
++	EXPECT_FALSE(Catalog.ResolveCommand(UnknownCollection, aCommand, sizeof(aCommand)));
++	EXPECT_STREQ(aCommand, "");
++	EXPECT_FALSE(Catalog.ResolveCommand(*pRandom, aCommand, 8));
++	EXPECT_STREQ(aCommand, "");
++
++	for(int SortIndex = 0; SortIndex < static_cast<int>(CMapVoteCatalog::ESort::COUNT); ++SortIndex)
++	{
++		const auto Sort = static_cast<CMapVoteCatalog::ESort>(SortIndex);
++		if(Sort == CMapVoteCatalog::ESort::DATE_NEWEST || Sort == CMapVoteCatalog::ESort::DATE_OLDEST)
++			continue;
++		const CMapVoteCatalog::SPageId SortedCollection{CMapVoteCatalog::EPage::ARCHIVE_COLLECTION, Search.m_CollectionId, 0, Sort};
++		ASSERT_NE(Catalog.Find(SortedCollection, "★ Random AIP · Race map"), nullptr) << static_cast<int>(Sort);
++	}
++	const CMapVoteCatalog::SPageId SortSettings{CMapVoteCatalog::EPage::ARCHIVE_SORT, Search.m_CollectionId, 0};
++	EXPECT_EQ(Catalog.Find(SortSettings, "★ Random AIP · Race map"), nullptr);
++}
++
++TEST_F(CMapArchiveTest, CollectionRandomDeduplicatesAliasesAndSkipsEmptyMaps)
++{
++	WriteIndex({{"Aip map", TestHash(1), 100}, {"Aip alias", TestHash(1), 100}, {"Aip empty", TestHash(2), 0}});
++	CMapArchive Archive;
++	Load(&Archive);
++	const CMapArchive::SSearchResult Search = Archive.Search("aip", m_pStorage.get());
++	ASSERT_EQ(Search.m_Status, CMapArchive::ESearchStatus::CREATED);
++	CreateCoreMapCatalog();
++
++	CMapVoteCatalog Catalog;
++	std::string Error;
++	ASSERT_TRUE(Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Archive, &Error)) << Error;
++	const CMapVoteCatalog::SPageId Collection{CMapVoteCatalog::EPage::ARCHIVE_COLLECTION, Search.m_CollectionId, 0};
++	const CMapVoteCatalog::SEntry *pRandom = Catalog.OptionAt(Collection, 1);
++	ASSERT_NE(pRandom, nullptr);
++	char aCommand[VOTE_CMD_LENGTH];
++	ASSERT_TRUE(Catalog.ResolveCommand(*pRandom, aCommand, sizeof(aCommand)));
++	EXPECT_EQ(aCommand, "archive_map \"" + TestHash(1) + "\"");
++}
++
++TEST_F(CMapArchiveTest, MaxLengthUtf8CollectionNameKeepsRandomRowWithinProtocolLimits)
++{
++	WriteIndex(DefaultMaps());
++	CMapArchive Archive;
++	Load(&Archive);
++	std::string LongName;
++	for(int Index = 0; Index < 10; ++Index)
++		LongName += "Äö";
++	ASSERT_EQ(LongName.size(), 40U);
++	const std::string SearchInput = "aip --name " + LongName;
++	const CMapArchive::SSearchResult Search = Archive.Search(SearchInput.c_str(), m_pStorage.get());
++	ASSERT_EQ(Search.m_Status, CMapArchive::ESearchStatus::CREATED);
++	CreateCoreMapCatalog();
++
++	CMapVoteCatalog Catalog;
++	std::string Error;
++	ASSERT_TRUE(Catalog.BuildFromStorageType(m_pStorage.get(), IStorage::TYPE_SAVE, nullptr, &Archive, &Error)) << Error;
++	const CMapVoteCatalog::SPageId Collection{CMapVoteCatalog::EPage::ARCHIVE_COLLECTION, Search.m_CollectionId, 0};
++
++	int RandomRows = 0;
++	for(int Index = 0; Index < Catalog.OptionCount(Collection); ++Index)
++	{
++		const CMapVoteCatalog::SEntry *pEntry = Catalog.OptionAt(Collection, Index);
++		ASSERT_NE(pEntry, nullptr);
++		if(pEntry->m_Kind != CMapVoteCatalog::EOptionKind::RANDOM)
++			continue;
++		++RandomRows;
++		EXPECT_EQ(Index, 1);
++		EXPECT_TRUE(str_utf8_check(pEntry->m_Description.c_str()));
++		EXPECT_LT(pEntry->m_Description.size(), static_cast<size_t>(VOTE_DESC_LENGTH));
++		char aCommand[VOTE_CMD_LENGTH];
++		EXPECT_TRUE(Catalog.ResolveCommand(*pEntry, aCommand, sizeof(aCommand)));
++	}
++	ASSERT_EQ(RandomRows, 1);
++	const CMapVoteCatalog::SEntry *pRandom = Catalog.OptionAt(Collection, 1);
++	ASSERT_NE(pRandom, nullptr);
++	EXPECT_TRUE(str_startswith(pRandom->m_Description.c_str(), "★ Random "));
++	EXPECT_TRUE(str_endswith(pRandom->m_Description.c_str(), " map"));
++}
