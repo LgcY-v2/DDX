@@ -3,7 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM_SOURCE="$ROOT_DIR/source/ddnet"
-PATCH_FILE="$ROOT_DIR/patches/0001-feat-server-add-stock-client-map-vote-catalog.patch"
+PATCH_FILES=(
+	"$ROOT_DIR/patches/0001-feat-server-add-stock-client-map-vote-catalog.patch"
+	"$ROOT_DIR/patches/0002-feat-server-brand-ddx.patch"
+)
 PATCHED_SOURCE="$ROOT_DIR/build/source-map-voting"
 PATCHED_BUILD="$ROOT_DIR/build/ddnet-map-voting"
 RUNTIME_BINARY="$ROOT_DIR/build/ddnet/DDNet-Server"
@@ -34,10 +37,12 @@ if [[ "$ACTUAL_UPSTREAM_REVISION" != "$EXPECTED_UPSTREAM_REVISION" ]]; then
 	exit 1
 fi
 export DDNET_GIT_SHORTREV_HASH="${EXPECTED_UPSTREAM_REVISION:0:16}"
-if [[ ! -f "$PATCH_FILE" ]]; then
-	echo "Map voting patch is missing: $PATCH_FILE" >&2
-	exit 1
-fi
+for patch_file in "${PATCH_FILES[@]}"; do
+	if [[ ! -f "$patch_file" ]]; then
+		echo "Server patch is missing: $patch_file" >&2
+		exit 1
+	fi
+done
 
 install -d -m 755 "$ROOT_DIR/build"
 STAGED_SOURCE="$(mktemp -d "$ROOT_DIR/build/.source-map-voting.XXXXXX")"
@@ -53,7 +58,9 @@ rmdir "$STAGED_SOURCE/ddnet-libs"
 ln -s "$UPSTREAM_SOURCE/ddnet-libs" "$STAGED_SOURCE/ddnet-libs"
 (
 	cd "$STAGED_SOURCE"
-	/usr/bin/patch --batch --forward -p1 <"$PATCH_FILE"
+	for patch_file in "${PATCH_FILES[@]}"; do
+		/usr/bin/patch --batch --forward -p1 <"$patch_file"
+	done
 )
 
 rm -rf -- "$PATCHED_SOURCE"

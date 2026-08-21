@@ -1,0 +1,14 @@
+diff --git a/src/game/server/gamemodes/ddnet.cpp b/src/game/server/gamemodes/ddnet.cpp
+--- a/src/game/server/gamemodes/ddnet.cpp
++++ b/src/game/server/gamemodes/ddnet.cpp
+@@ -16,8 +16,8 @@
+ #include <game/server/score.h>
+ #include <game/version.h>
+ 
+-#define GAME_TYPE_NAME "DDraceNetwork"
+-#define TEST_TYPE_NAME "TestDDraceNetwork"
++#define GAME_TYPE_NAME "DDX"
++#define TEST_TYPE_NAME "TestDDX"
+ 
+ CGameControllerDDNet::CGameControllerDDNet(class CGameContext *pGameServer) :
+ 	IGameController(pGameServer)

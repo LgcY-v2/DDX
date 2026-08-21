@@ -1,15 +1,14 @@
-# tee_world_candidate_testing
+# DDX
 
-`tee_world_candidate_testing` is a password-protected DDNet 19.9 DDRace server
-for candidate feature testing. It listens publicly on UDP port
+DDX is a password-protected DDNet 19.9 server mod for feature testing. Its
+current gameplay is unchanged DDRace. It listens publicly on UDP port
 `8305` and runs as the `lgcy` user service
 `tee-world-candidate-testing-ddnet.service`.
 
-The source is pinned to the official DDNet `19.9` tag. A tracked server-only
-patch adds clean, browsable map-vote pages and historical archive search for
-unmodified DDNet clients. The
-runtime starts on the shared `Tutorial` map with the standard `ddnet`
-controller, which advertises the `DDraceNetwork` game type.
+The source is pinned to the official DDNet `19.9` tag. Tracked server-only
+patches add clean, browsable map-vote pages, historical archive search, and the
+`DDX` advertised game type for unmodified DDNet clients. The runtime starts on
+the shared `Tutorial` map with the unchanged DDNet DDRace controller.
 
 The map corpus has one authority: `/srv/multi_tas/data/maps`. This server reads
 all 3,511 DDRace, Gores, and root maps directly from that path. It does not copy
@@ -21,7 +20,8 @@ page, and sort choice through map changes.
 ## Layout
 
 - `source/ddnet/` — pinned official DDNet source
-- `patches/` — tracked server-only map voting patch
+- `patches/` — tracked DDX server patches
+- `references/` — pinned feature notes for other permitted server mods
 - `build/source-map-voting/` — generated patched source (ignored)
 - `build/ddnet-map-voting/` — generated patched build (ignored)
 - `build/ddnet/DDNet-Server` — release server build
@@ -41,7 +41,7 @@ Run these commands as `lgcy`:
 ./scripts/start-server.sh
 ```
 
-Build the pinned source plus the tracked server patch with:
+Build the pinned source plus the tracked server patches with:
 
 ```bash
 ./scripts/build-server.sh
@@ -97,5 +97,5 @@ coverage, index generation, and cache ownership.
 
 ## Connection
 
-Connect to `51.83.129.176:8305` with DDNet. The server name is
-`tee_world_candidate_testing`.
+Connect to `51.83.129.176:8305` with DDNet. The server name is `DDX | Testing`
+and its advertised game type is `DDX`.

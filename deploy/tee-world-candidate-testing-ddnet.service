@@ -1,5 +1,5 @@
 [Unit]
-Description=tee_world_candidate_testing DDNet server
+Description=DDX | Testing server
 After=network-online.target
 Wants=network-online.target
 
