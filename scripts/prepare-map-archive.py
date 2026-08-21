@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the map warehouse archive and build its runtime search index."""
+"""Verify the historical map archive and build its runtime search index."""
 
 from __future__ import annotations
 
@@ -335,7 +335,7 @@ def main() -> int:
         key=lambda entry: (clean_display_name(entry[0]).casefold(), entry[1], entry[4]),
     )
     lines = [
-        "TW_MAP_WAREHOUSE_INDEX\t1",
+        "TW_MAP_ARCHIVE_INDEX\t1",
         f"archive_sha256\t{archive_sha256}",
         f"archive_size\t{archive_size}",
         f"authority_listing_sha256\t{heinrich_sha256}",
@@ -366,7 +366,7 @@ def main() -> int:
     write_atomic(args.output, index_content)
 
     metadata_lines = [
-        "TW_MAP_WAREHOUSE_METADATA\t1",
+        "TW_MAP_ARCHIVE_METADATA\t1",
         f"authority_listing_sha256\t{heinrich_sha256}",
         f"directory_listing_sha256\t{heinrich_directory_sha256}",
         f"map_entries\t{len(heinrich_entries)}",
@@ -386,7 +386,7 @@ def main() -> int:
     for entry in archive_entries:
         block_bytes[entry.block] += entry.size
     report_lines = [
-        "# Map warehouse preparation report",
+        "# Map archive preparation report",
         "",
         f"- Archive: `{args.archive}`",
         f"- Archive bytes: `{archive_size}`",

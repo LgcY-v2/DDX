@@ -11,8 +11,14 @@ server/secrets.cfg
 server/state/
 server/teehistorian/
 server/maps/warehouse/
+server/maps/archive/
 warehouse/archive/
 warehouse/delta/
 warehouse/index/
 warehouse/metadata/
 warehouse/tools/
+archive/source/
+archive/delta/
+archive/index/
+archive/metadata/
+archive/tools/

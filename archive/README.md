@@ -1,4 +1,4 @@
-# Historical map warehouse
+# Historical map archive
 
 The live archive, delta files, generated index and metadata, source listings,
 and locally extracted 7-Zip tool are runtime data and intentionally ignored by
@@ -14,7 +14,7 @@ content hashes and do not create duplicate files.
 
 Runtime paths:
 
-- `archive/maps.7z` — immutable compressed mirror archive;
+- `source/maps.7z` — immutable compressed mirror archive;
 - `delta/` — the four verified missing contents;
 - `index/maps-v1.tsv` — deterministic, percent-encoded runtime index;
 - `index/map-metadata-v1.tsv` — content-level archive-date metadata;
@@ -22,9 +22,9 @@ Runtime paths:
   reproduce the index and metadata;
 - `tools/7zip-26.00/` — extracted Ubuntu 7zip package, not system-installed;
 - `manifest.sha256` — immutable runtime bytes checked before every server start;
-- `../server/maps/warehouse/` — bounded 2 GiB/256-map lazy cache.
+- `../server/maps/archive/` — bounded 2 GiB/256-map lazy cache.
 
-Regenerate both index files with `scripts/prepare-map-warehouse.py`. The
+Regenerate both index files with `scripts/prepare-map-archive.py`. The
 command must be given the tee.world directory index, Heinrich `LISTING`,
 Heinrich's visible map-directory index, archive, delta directory, and exact
 7-Zip executable. It refuses unsafe members, duplicate members, size or hash
@@ -45,5 +45,5 @@ Current immutable identities:
 - archive SHA-256: `e8c0f3c9b2d13664def818794680a3e411f358927fdbe00d8fb33a4c1b0c8961`;
 - Heinrich `LISTING` SHA-256: `3e92ac774f931892c2be3dd9a1753fb4a894ef7552f96de6a1dac951b4a3dd42`;
 - Heinrich directory SHA-256: `be12153590467323ded87e659355bd377a6536897921e108cde9b09ae42e4405`;
-- generated index SHA-256: `910fbaedfba8873a4bb618edad98b0686dc407fdded8099e7af4ca4e7dfea30f`;
-- generated metadata SHA-256: `a5d3841cdd88aedb2a455c2c5dec3d52d4c079d70e9db79e24ce635fa21200a6`.
+- generated index SHA-256: `a984c6aff2af954f25ac49c5694534175f90b55ae84833948e80efb71d446d79`;
+- generated metadata SHA-256: `430fa4eefea661a39c755754b227f61fb5366f41abad6049fb8708707cebfeb7`.
