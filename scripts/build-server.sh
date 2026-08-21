@@ -9,6 +9,7 @@ PATCH_FILES=(
 	"$ROOT_DIR/patches/0003-feat-add-random-archive-collection-maps.patch"
 	"$ROOT_DIR/patches/0004-feat-add-owner-rcon.patch"
 	"$ROOT_DIR/patches/0005-feat-target-super-commands.patch"
+	"$ROOT_DIR/patches/0006-feat-add-aip.patch"
 )
 PATCHED_SOURCE="$ROOT_DIR/build/source-map-voting"
 PATCHED_BUILD="$ROOT_DIR/build/ddnet-map-voting"

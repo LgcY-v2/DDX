@@ -1,0 +1,342 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LgcY-v2 <menhardandre@gmail.com>
+Date: Fri, 21 Aug 2026 21:09:46 +0000
+Subject: [PATCH 6/8] feat: add aip
+
+- use millisecond delays rounded to server ticks
+- keep firing cadence on an absolute tick deadline
+- send matching weapon delays to stock clients
+---
+ CMakeLists.txt                         |  2 +
+ src/game/server/ddx_rapid_fire.h       | 24 +++++++++++
+ src/game/server/entities/character.cpp | 26 +++++++++---
+ src/game/server/entities/character.h   |  1 +
+ src/game/server/gamecontext.cpp        | 56 ++++++++++++++++++++++++++
+ src/game/server/gamecontext.h          |  2 +
+ src/game/server/player.cpp             |  1 +
+ src/game/server/player.h               |  1 +
+ src/test/ddx_rapid_fire_test.cpp       | 19 +++++++++
+ 9 files changed, 127 insertions(+), 5 deletions(-)
+ create mode 100644 src/game/server/ddx_rapid_fire.h
+ create mode 100644 src/test/ddx_rapid_fire_test.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b372731..97ee750 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2944,6 +2944,7 @@ if(SERVER)
+     # tidy-alphabetical-start
+     ddracechat.cpp
+     ddracecommands.cpp
++    ddx_rapid_fire.h
+     entities/character.cpp
+     entities/character.h
+     entities/door.cpp
+@@ -3235,6 +3236,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
+     datafile_test.cpp
+     dbg_test.cpp
+     ddx_auth_test.cpp
++    ddx_rapid_fire_test.cpp
+     editor_test.cpp
+     fs_test.cpp
+     gameworld_test.cpp
+diff --git a/src/game/server/ddx_rapid_fire.h b/src/game/server/ddx_rapid_fire.h
+new file mode 100644
+index 0000000..f830218
+--- /dev/null
++++ b/src/game/server/ddx_rapid_fire.h
+@@ -0,0 +1,24 @@
++#ifndef GAME_SERVER_DDX_RAPID_FIRE_H
++#define GAME_SERVER_DDX_RAPID_FIRE_H
++
++#include <algorithm>
++
++namespace DdxRapidFire
++{
++constexpr int DelayTicks(int DelayMs, int TickSpeed)
++{
++	return std::max(1, (DelayMs * TickSpeed + 999) / 1000);
++}
++
++constexpr int DelayMs(int DelayTicks, int TickSpeed)
++{
++	return (DelayTicks * 1000 + TickSpeed - 1) / TickSpeed;
++}
++
++constexpr bool CanFire(int Tick, int LastFireTick, int DelayTicks)
++{
++	return LastFireTick < 0 || Tick >= LastFireTick + DelayTicks;
++}
++} // namespace DdxRapidFire
++
++#endif // GAME_SERVER_DDX_RAPID_FIRE_H
+diff --git a/src/game/server/entities/character.cpp b/src/game/server/entities/character.cpp
+index b2e568b..51ee292 100644
+--- a/src/game/server/entities/character.cpp
++++ b/src/game/server/entities/character.cpp
+@@ -19,6 +19,7 @@
+ 
+ #include <game/mapitems.h>
+ #include <game/server/gamecontext.h>
++#include <game/server/ddx_rapid_fire.h>
+ #include <game/server/gamecontroller.h>
+ #include <game/server/player.h>
+ #include <game/server/score.h>
+@@ -63,6 +64,7 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
+ 	m_LastAction = -1;
+ 	m_LastWeapon = WEAPON_HAMMER;
+ 	m_QueuedWeapon = -1;
++	m_LastAipFireTick = -1;
+ 	m_LastRefillJumps = false;
+ 	m_LastPenalty = false;
+ 	m_LastBonus = false;
+@@ -444,7 +446,8 @@ void CCharacter::HandleWeaponSwitch()
+ 
+ void CCharacter::FireWeapon()
+ {
+-	if(m_ReloadTimer != 0)
++	const bool RapidFire = m_pPlayer->m_AipDelayTicks > 0 && m_Core.m_ActiveWeapon != WEAPON_NINJA;
++	if(!RapidFire && m_ReloadTimer != 0)
+ 	{
+ 		if(m_LatestInput.m_Fire & 1)
+ 		{
+@@ -466,6 +469,10 @@ void CCharacter::FireWeapon()
+ 	// by something
+ 	if(m_FrozenLastTick)
+ 		FullAuto = true;
++	if(RapidFire)
++		FullAuto = true;
++	if(RapidFire && !DdxRapidFire::CanFire(Server()->Tick(), m_LastAipFireTick, m_pPlayer->m_AipDelayTicks))
++		return;
+ 
+ 	// don't fire hammer when player is deep and sv_deepfly is disabled
+ 	if(!g_Config.m_SvDeepfly && m_Core.m_ActiveWeapon == WEAPON_HAMMER && m_Core.m_DeepFrozen)
+@@ -551,8 +558,11 @@ void CCharacter::FireWeapon()
+ 		// if we Hit anything, we have to wait for the reload
+ 		if(Hits)
+ 		{
+-			float FireDelay = GetTuning(m_TuneZone)->m_HammerHitFireDelay;
+-			m_ReloadTimer = FireDelay * Server()->TickSpeed() / 1000;
++			if(!RapidFire)
++			{
++				float FireDelay = GetTuning(m_TuneZone)->m_HammerHitFireDelay;
++				m_ReloadTimer = FireDelay * Server()->TickSpeed() / 1000;
++			}
+ 		}
+ 	}
+ 	break;
+@@ -637,11 +647,14 @@ void CCharacter::FireWeapon()
+ 	}
+ 
+ 	m_AttackTick = Server()->Tick();
++	if(RapidFire)
++		m_LastAipFireTick = Server()->Tick();
+ 
+ 	// -1 is no weapon, handled here so pain sound still plays when firing in freeze
+ 	if(!m_ReloadTimer && m_Core.m_ActiveWeapon != -1)
+ 	{
+-		m_ReloadTimer = GetTuning(m_TuneZone)->GetWeaponFireDelay(m_Core.m_ActiveWeapon) * Server()->TickSpeed();
++		if(!RapidFire)
++			m_ReloadTimer = GetTuning(m_TuneZone)->GetWeaponFireDelay(m_Core.m_ActiveWeapon) * Server()->TickSpeed();
+ 	}
+ }
+ 
+@@ -655,11 +668,14 @@ void CCharacter::HandleWeapons()
+ 		m_PainSoundTimer--;
+ 
+ 	// check reload timer
+-	if(m_ReloadTimer)
++	const bool RapidFire = m_pPlayer->m_AipDelayTicks > 0 && m_Core.m_ActiveWeapon != WEAPON_NINJA;
++	if(m_ReloadTimer && !RapidFire)
+ 	{
+ 		m_ReloadTimer--;
+ 		return;
+ 	}
++	if(RapidFire)
++		m_ReloadTimer = 0;
+ 
+ 	// fire Weapon, if wanted
+ 	FireWeapon();
+diff --git a/src/game/server/entities/character.h b/src/game/server/entities/character.h
+index 5e9ca84..31ec7b0 100644
+--- a/src/game/server/entities/character.h
++++ b/src/game/server/entities/character.h
+@@ -131,6 +131,7 @@ private:
+ 
+ 	int m_ReloadTimer;
+ 	int m_AttackTick;
++	int m_LastAipFireTick;
+ 
+ 	int m_MoveRestrictions;
+ 
+diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
+index 6b0b437..86045b4 100644
+--- a/src/game/server/gamecontext.cpp
++++ b/src/game/server/gamecontext.cpp
+@@ -2,6 +2,7 @@
+ /* If you are missing that file, acquire a complete release at teeworlds.com.                */
+ #include "gamecontext.h"
+ 
++#include "ddx_rapid_fire.h"
+ #include "entities/character.h"
+ #include "gamemodes/ddnet.h"
+ #include "gamemodes/mod.h"
+@@ -1106,6 +1107,16 @@ void CGameContext::SendTuningParams(int ClientId, int Zone)
+ 	dbg_assert(m_apPlayers[ClientId], "client %d without player", ClientId);
+ 
+ 	CTuningParams Params = m_aTuningList[Zone];
++	if(m_apPlayers[ClientId]->m_AipDelayTicks > 0)
++	{
++		const float DelayMs = m_apPlayers[ClientId]->m_AipDelayTicks * 1000.0f / Server()->TickSpeed();
++		Params.m_HammerFireDelay = DelayMs;
++		Params.m_HammerHitFireDelay = DelayMs;
++		Params.m_GunFireDelay = DelayMs;
++		Params.m_ShotgunFireDelay = DelayMs;
++		Params.m_GrenadeFireDelay = DelayMs;
++		Params.m_LaserFireDelay = DelayMs;
++	}
+ 
+ 	CCharacter *pCharacter = m_apPlayers[ClientId]->GetCharacter();
+ 	int NeededFakeTuning = pCharacter ? pCharacter->NeededFaketuning() : 0;
+@@ -2016,6 +2027,7 @@ bool CGameContext::OnClientDataPersist(int ClientId, void *pData)
+ 	pPersistent->m_MapVoteType = Page.m_Type;
+ 	pPersistent->m_MapVoteSubPage = Page.m_SubPage;
+ 	pPersistent->m_MapVoteSort = static_cast<int>(Page.m_Sort);
++	pPersistent->m_AipDelayTicks = m_apPlayers[ClientId]->m_AipDelayTicks;
+ 	return true;
+ }
+ 
+@@ -2074,6 +2086,7 @@ void CGameContext::OnClientConnected(int ClientId, void *pData)
+ 		m_apPlayers[ClientId]->m_MapVoteType = MapVotePage.m_Type;
+ 		m_apPlayers[ClientId]->m_MapVoteSubPage = MapVotePage.m_SubPage;
+ 		m_apPlayers[ClientId]->m_MapVoteSort = static_cast<int>(MapVotePage.m_Sort);
++		m_apPlayers[ClientId]->m_AipDelayTicks = pPersistentData->m_AipDelayTicks;
+ 	}
+ 
+ 	SendMotd(ClientId);
+@@ -3664,6 +3677,48 @@ void CGameContext::ConSay(IConsole::IResult *pResult, void *pUserData)
+ 	pSelf->SendChat(-1, TEAM_ALL, pResult->GetString(0));
+ }
+ 
++void CGameContext::ConAip(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++
++	const bool HasDelay = pResult->NumArguments() > 0;
++	int DelayTicks = 1;
++	if(HasDelay)
++	{
++		const int DelayMs = pResult->GetInteger(0);
++		if(DelayMs < 1 || DelayMs > 10000)
++		{
++			pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "aip", "delay must be 1..10000 ms");
++			return;
++		}
++		DelayTicks = DdxRapidFire::DelayTicks(DelayMs, pSelf->Server()->TickSpeed());
++	}
++
++	const int ClientId = pResult->NumArguments() > 1 ? pResult->GetVictim() : pResult->m_ClientId;
++	if(!CheckClientId(ClientId))
++	{
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "aip", "a client must be specified outside rcon");
++		return;
++	}
++	CPlayer *pPlayer = pSelf->m_apPlayers[ClientId];
++	if(!pPlayer)
++		return;
++	if(HasDelay)
++		pPlayer->m_AipDelayTicks = DelayTicks;
++	else
++		pPlayer->m_AipDelayTicks = pPlayer->m_AipDelayTicks == 0 ? 1 : 0;
++	pSelf->SendTuningParams(ClientId, pPlayer->m_TuneZone);
++	char aBuf[96];
++	if(pPlayer->m_AipDelayTicks == 0)
++		str_format(aBuf, sizeof(aBuf), "rapid fire disabled for client %d", ClientId);
++	else
++	{
++		const int DelayMs = DdxRapidFire::DelayMs(pPlayer->m_AipDelayTicks, pSelf->Server()->TickSpeed());
++		str_format(aBuf, sizeof(aBuf), "rapid fire client %d: %d ms (%d shots/s)", ClientId, DelayMs, pSelf->Server()->TickSpeed() / pPlayer->m_AipDelayTicks);
++	}
++	pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "aip", aBuf);
++}
++
+ void CGameContext::ConSetTeam(IConsole::IResult *pResult, void *pUserData)
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
+@@ -4365,6 +4420,7 @@ void CGameContext::OnConsoleInit()
+ 	Console()->Register("mod_alert", "v[id] r[message]", CFGFLAG_SERVER, ConModAlert, this, "Send a moderator alert message to player");
+ 	Console()->Register("broadcast", "r[message]", CFGFLAG_SERVER, ConBroadcast, this, "Broadcast message");
+ 	Console()->Register("say", "r[message]", CFGFLAG_SERVER, ConSay, this, "Say in chat");
++	Console()->Register("aip", "?i[delay_ms] ?v[victim]", CFGFLAG_SERVER | CMDFLAG_OWNER, ConAip, this, "Toggle rapid fire or set its delay in milliseconds (owner only)");
+ 	Console()->Register("set_team", "v[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
+ 	Console()->Register("set_team_all", "i[team-id]", CFGFLAG_SERVER, ConSetTeamAll, this, "Set team for all players (spectators = -1, game = 0)");
+ 	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
+diff --git a/src/game/server/gamecontext.h b/src/game/server/gamecontext.h
+index a71f8a6..96fd021 100644
+--- a/src/game/server/gamecontext.h
++++ b/src/game/server/gamecontext.h
+@@ -161,6 +161,7 @@ class CGameContext : public IGameServer
+ 	static void ConModAlert(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConBroadcast(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConSay(IConsole::IResult *pResult, void *pUserData);
++	static void ConAip(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConSetTeam(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConSetTeamAll(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConHotReload(IConsole::IResult *pResult, void *pUserData);
+@@ -203,6 +204,7 @@ class CGameContext : public IGameServer
+ 		int m_MapVoteType;
+ 		int m_MapVoteSubPage;
+ 		int m_MapVoteSort;
++		int m_AipDelayTicks;
+ 	};
+ 
+ public:
+diff --git a/src/game/server/player.cpp b/src/game/server/player.cpp
+index f31baee..792d72b 100644
+--- a/src/game/server/player.cpp
++++ b/src/game/server/player.cpp
+@@ -127,6 +127,7 @@ void CPlayer::Reset()
+ 	m_ShowDistance = vec2(1200, 800);
+ 	m_SpecTeam = false;
+ 	m_NinjaJetpack = false;
++	m_AipDelayTicks = 0;
+ 
+ 	m_Paused = PAUSE_NONE;
+ 	m_DND = false;
+diff --git a/src/game/server/player.h b/src/game/server/player.h
+index 8a173dc..05aa5ba 100644
+--- a/src/game/server/player.h
++++ b/src/game/server/player.h
+@@ -193,6 +193,7 @@ public:
+ 	vec2 m_ShowDistance;
+ 	bool m_SpecTeam;
+ 	bool m_NinjaJetpack;
++	int m_AipDelayTicks;
+ 
+ 	// camera info is used sparingly for converting aim target to absolute world coordinates
+ 	class CCameraInfo
+diff --git a/src/test/ddx_rapid_fire_test.cpp b/src/test/ddx_rapid_fire_test.cpp
+new file mode 100644
+index 0000000..be77ffe
+--- /dev/null
++++ b/src/test/ddx_rapid_fire_test.cpp
+@@ -0,0 +1,19 @@
++#include <game/server/ddx_rapid_fire.h>
++
++#include <gtest/gtest.h>
++
++TEST(DdxRapidFire, RoundsDelayUpToServerTicks)
++{
++	EXPECT_EQ(DdxRapidFire::DelayTicks(1, 50), 1);
++	EXPECT_EQ(DdxRapidFire::DelayTicks(20, 50), 1);
++	EXPECT_EQ(DdxRapidFire::DelayTicks(21, 50), 2);
++	EXPECT_EQ(DdxRapidFire::DelayTicks(100, 50), 5);
++	EXPECT_EQ(DdxRapidFire::DelayMs(5, 50), 100);
++}
++
++TEST(DdxRapidFire, UsesAnAbsoluteFireDeadline)
++{
++	EXPECT_TRUE(DdxRapidFire::CanFire(100, -1, 5));
++	EXPECT_FALSE(DdxRapidFire::CanFire(104, 100, 5));
++	EXPECT_TRUE(DdxRapidFire::CanFire(105, 100, 5));
++}
