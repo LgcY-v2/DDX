@@ -1,0 +1,887 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LgcY-v2 <menhardandre@gmail.com>
+Date: Fri, 21 Aug 2026 21:08:35 +0000
+Subject: [PATCH 4/8] feat: add owner rcon
+
+- keep test commands owner only while sv test cmds is off
+- protect higher ranked clients in target commands
+- resolve numeric victims through the server policy
+---
+ CMakeLists.txt                    |   3 +
+ src/engine/server.h               |   1 +
+ src/engine/server/authmanager.cpp |   3 +
+ src/engine/server/authmanager.h   |   4 +
+ src/engine/server/ddx_auth.h      |  31 ++++++++
+ src/engine/server/server.cpp      |  90 +++++++++++++++++++---
+ src/engine/server/server.h        |   2 +
+ src/engine/shared/config.h        |   1 +
+ src/engine/shared/console.cpp     |  34 +++++----
+ src/game/server/gamecontext.cpp   |  65 ++++++++++++----
+ src/game/server/mutes.cpp         |  23 ++++++
+ src/game/server/player.cpp        |   3 +-
+ src/test/console_victim_test.cpp  |  70 +++++++++++++++++
+ src/test/ddx_auth_test.cpp        | 120 ++++++++++++++++++++++++++++++
+ 14 files changed, 411 insertions(+), 39 deletions(-)
+ create mode 100644 src/engine/server/ddx_auth.h
+ create mode 100644 src/test/console_victim_test.cpp
+ create mode 100644 src/test/ddx_auth_test.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ca579bf..b372731 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2919,6 +2919,7 @@ if(SERVER)
+     databases/connection_pool.h
+     databases/mysql.cpp
+     databases/sqlite.cpp
++    ddx_auth.h
+     main.cpp
+     name_ban.cpp
+     name_ban.h
+@@ -3229,9 +3230,11 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
+     chunk_header_test.cpp
+     color_test.cpp
+     compression_test.cpp
++    console_victim_test.cpp
+     csv_test.cpp
+     datafile_test.cpp
+     dbg_test.cpp
++    ddx_auth_test.cpp
+     editor_test.cpp
+     fs_test.cpp
+     gameworld_test.cpp
+diff --git a/src/engine/server.h b/src/engine/server.h
+index b8d2982..29ca0a2 100644
+--- a/src/engine/server.h
++++ b/src/engine/server.h
+@@ -262,6 +262,7 @@ public:
+ 	virtual int GetAuthedState(int ClientId) const = 0;
+ 	virtual bool IsRconAuthed(int ClientId) const = 0;
+ 	virtual bool IsRconAuthedAdmin(int ClientId) const = 0;
++	virtual bool CanManageClient(int ActorClientId, int TargetClientId) const = 0;
+ 	virtual const char *GetAuthName(int ClientId) const = 0;
+ 	virtual bool HasAuthHidden(int ClientId) const = 0;
+ 	virtual void Kick(int ClientId, const char *pReason) = 0;
+diff --git a/src/engine/server/authmanager.cpp b/src/engine/server/authmanager.cpp
+index f6254dc..b5dfe17 100644
+--- a/src/engine/server/authmanager.cpp
++++ b/src/engine/server/authmanager.cpp
+@@ -18,6 +18,8 @@ const char *CAuthManager::AuthLevelToRoleName(int AuthLevel)
+ {
+ 	switch(AuthLevel)
+ 	{
++	case RoleRank::OWNER:
++		return RoleName::OWNER;
+ 	case AUTHED_ADMIN:
+ 		return RoleName::ADMIN;
+ 	case AUTHED_MOD:
+@@ -58,6 +60,7 @@ CAuthManager::CAuthManager()
+ 	m_aDefault[2] = -1;
+ 	m_Generated = false;
+ 
++	AddRole(RoleName::OWNER, RoleRank::OWNER);
+ 	AddRole(RoleName::ADMIN, RoleRank::ADMIN);
+ 	AddRole(RoleName::MODERATOR, RoleRank::MODERATOR);
+ 	AddRole(RoleName::HELPER, RoleRank::HELPER);
+diff --git a/src/engine/server/authmanager.h b/src/engine/server/authmanager.h
+index 01e6514..09c240e 100644
+--- a/src/engine/server/authmanager.h
++++ b/src/engine/server/authmanager.h
+@@ -6,6 +6,8 @@
+ 
+ #include <generated/protocol.h>
+ 
++#include "ddx_auth.h"
++
+ #include <string>
+ #include <unordered_map>
+ #include <vector>
+@@ -14,6 +16,7 @@
+ 
+ namespace RoleName
+ {
++	inline const char *const OWNER = "owner";
+ 	inline const char *const ADMIN = "admin";
+ 	inline const char *const MODERATOR = "moderator";
+ 	inline const char *const HELPER = "helper";
+@@ -21,6 +24,7 @@ namespace RoleName
+ 
+ namespace RoleRank
+ {
++	static constexpr int OWNER = DdxAuth::OWNER;
+ 	static constexpr int ADMIN = AUTHED_ADMIN;
+ 	static constexpr int MODERATOR = AUTHED_MOD;
+ 	static constexpr int HELPER = AUTHED_HELPER;
+diff --git a/src/engine/server/ddx_auth.h b/src/engine/server/ddx_auth.h
+new file mode 100644
+index 0000000..f64d12d
+--- /dev/null
++++ b/src/engine/server/ddx_auth.h
+@@ -0,0 +1,31 @@
++#ifndef ENGINE_SERVER_DDX_AUTH_H
++#define ENGINE_SERVER_DDX_AUTH_H
++
++#include <generated/protocol.h>
++
++namespace DdxAuth
++{
++inline constexpr int OWNER = AUTHED_ADMIN + 1;
++
++constexpr bool IsOwner(int AuthLevel)
++{
++	return AuthLevel >= OWNER;
++}
++
++constexpr bool CanManage(int ActorAuthLevel, int TargetAuthLevel)
++{
++	return ActorAuthLevel >= TargetAuthLevel;
++}
++
++constexpr bool CanUseTestCommands(int AuthLevel, bool TestCommandsEnabled)
++{
++	return TestCommandsEnabled || IsOwner(AuthLevel);
++}
++
++constexpr int PublicAuthLevel(int AuthLevel)
++{
++	return AuthLevel > AUTHED_ADMIN ? AUTHED_ADMIN : AuthLevel;
++}
++} // namespace DdxAuth
++
++#endif // ENGINE_SERVER_DDX_AUTH_H
+diff --git a/src/engine/server/server.cpp b/src/engine/server/server.cpp
+index 44d35b8..1ede970 100644
+--- a/src/engine/server/server.cpp
++++ b/src/engine/server/server.cpp
+@@ -19,6 +19,7 @@
+ #include <engine/map.h>
+ #include <engine/server.h>
+ #include <engine/server/authmanager.h>
++#include <engine/server/ddx_auth.h>
+ #include <engine/shared/compression.h>
+ #include <engine/shared/config.h>
+ #include <engine/shared/console.h>
+@@ -262,7 +263,7 @@ CServer::CServer()
+ 	m_aMapDownloadUrl[0] = '\0';
+ 
+ 	m_RconClientId = IServer::RCON_CID_SERV;
+-	m_RconAuthLevel = AUTHED_ADMIN;
++	m_RconAuthLevel = RoleRank::OWNER;
+ 
+ 	m_ServerInfoFirstRequest = 0;
+ 	m_ServerInfoNumRequests = 0;
+@@ -319,6 +320,9 @@ const char *CServer::DnsblStateStr(EDnsblState State)
+ IConsole::EAccessLevel CServer::ConsoleAccessLevel(int ClientId) const
+ {
+ 	int AuthLevel = GetAuthedState(ClientId);
++	if(DdxAuth::IsOwner(AuthLevel))
++		return IConsole::EAccessLevel::ADMIN;
++
+ 	switch(AuthLevel)
+ 	{
+ 	case AUTHED_ADMIN:
+@@ -674,7 +678,19 @@ bool CServer::IsRconAuthed(int ClientId) const
+ 
+ bool CServer::IsRconAuthedAdmin(int ClientId) const
+ {
+-	return GetAuthedState(ClientId) == AUTHED_ADMIN;
++	return GetAuthedState(ClientId) >= AUTHED_ADMIN;
++}
++
++bool CServer::CanManageClient(int ActorClientId, int TargetClientId) const
++{
++	if(TargetClientId < 0 || TargetClientId >= MAX_CLIENTS || m_aClients[TargetClientId].m_State == CClient::STATE_EMPTY)
++		return false;
++	if(ActorClientId < 0)
++		return m_RconClientId != IServer::RCON_CID_VOTE || !IsRconAuthed(TargetClientId);
++	if(ActorClientId >= MAX_CLIENTS || m_aClients[ActorClientId].m_State == CClient::STATE_EMPTY)
++		return false;
++
++	return DdxAuth::CanManage(GetAuthedState(ActorClientId), GetAuthedState(TargetClientId));
+ }
+ 
+ const char *CServer::GetAuthName(int ClientId) const
+@@ -2097,7 +2113,13 @@ void CServer::OnNetMsgRconCmd(int ClientId, const char *pCmd)
+ 	{
+ 		if(GameServer()->PlayerExists(ClientId))
+ 		{
+-			log_info("server", "ClientId=%d key='%s' rcon='%s'", ClientId, GetAuthName(ClientId), pCmd);
++			const char *pCommandStart = str_skip_whitespaces_const(pCmd);
++			const char *pCommandEnd = str_skip_to_whitespace_const(pCommandStart);
++			char aCommandName[IConsole::TEMPCMD_NAME_LENGTH];
++			const size_t CommandNameLength = std::min((size_t)(pCommandEnd - pCommandStart), sizeof(aCommandName) - 1);
++			mem_copy(aCommandName, pCommandStart, CommandNameLength);
++			aCommandName[CommandNameLength] = '\0';
++			log_info("server", "ClientId=%d key='%s' rcon_command='%s'", ClientId, GetAuthName(ClientId), aCommandName);
+ 			m_RconClientId = ClientId;
+ 			m_RconAuthLevel = GetAuthedState(ClientId);
+ 			{
+@@ -2106,7 +2128,7 @@ void CServer::OnNetMsgRconCmd(int ClientId, const char *pCmd)
+ 				Console()->ExecuteLineFlag(pCmd, CFGFLAG_SERVER, ClientId);
+ 			}
+ 			m_RconClientId = IServer::RCON_CID_SERV;
+-			m_RconAuthLevel = AUTHED_ADMIN;
++			m_RconAuthLevel = RoleRank::OWNER;
+ 		}
+ 	}
+ }
+@@ -2163,6 +2185,12 @@ void CServer::OnNetMsgRconAuth(int ClientId, const char *pName, const char *pPw,
+ 			const char *pIdent = m_AuthManager.KeyIdent(KeySlot);
+ 			switch(AuthLevel)
+ 			{
++			case RoleRank::OWNER:
++			{
++				SendRconLine(ClientId, "Owner authentication successful. Full remote console and test-command access granted.");
++				log_info("server", "ClientId=%d authed with key='%s' (owner)", ClientId, pIdent);
++				break;
++			}
+ 			case AUTHED_ADMIN:
+ 			{
+ 				SendRconLine(ClientId, "Admin authentication successful. Full remote console access granted.");
+@@ -3594,7 +3622,11 @@ void CServer::ConStatus(IConsole::IResult *pResult, void *pUser)
+ 				const char *pAuthStr = "";
+ 				const int AuthState = pThis->GetAuthedState(i);
+ 
+-				if(AuthState == AUTHED_ADMIN)
++				if(DdxAuth::IsOwner(AuthState))
++				{
++					pAuthStr = "(Owner)";
++				}
++				else if(AuthState == AUTHED_ADMIN)
+ 				{
+ 					pAuthStr = "(Admin)";
+ 				}
+@@ -3630,7 +3662,9 @@ void CServer::ConStatus(IConsole::IResult *pResult, void *pUser)
+ static int GetAuthLevel(const char *pLevel)
+ {
+ 	int Level = -1;
+-	if(!str_comp_nocase(pLevel, "admin"))
++	if(!str_comp_nocase(pLevel, "owner"))
++		Level = RoleRank::OWNER;
++	else if(!str_comp_nocase(pLevel, "admin"))
+ 		Level = AUTHED_ADMIN;
+ 	else if(str_startswith(pLevel, "mod"))
+ 		Level = AUTHED_MOD;
+@@ -3647,6 +3681,11 @@ bool CServer::CanClientUseCommandCallback(int ClientId, const IConsole::ICommand
+ 
+ bool CServer::CanClientUseCommand(int ClientId, const IConsole::ICommandInfo *pCommand) const
+ {
++	const int AuthLevel = GetAuthedState(ClientId);
++	if(pCommand->Flags() & CMDFLAG_OWNER && !DdxAuth::IsOwner(AuthLevel))
++		return false;
++	if(pCommand->Flags() & CMDFLAG_TEST && !DdxAuth::CanUseTestCommands(AuthLevel, Config()->m_SvTestingCommands))
++		return false;
+ 	if(pCommand->Flags() & CFGFLAG_CHAT)
+ 		return true;
+ 	if(pCommand->Flags() & CMDFLAG_PRACTICE)
+@@ -3656,6 +3695,12 @@ bool CServer::CanClientUseCommand(int ClientId, const IConsole::ICommandInfo *pC
+ 	return pCommand->GetAccessLevel() >= ConsoleAccessLevel(ClientId);
+ }
+ 
++bool CServer::CanManageAuthLevel(int ClientId, int AuthLevel) const
++{
++	const bool IsStartupConfig = m_RunServer == UNINITIALIZED && ClientId == IConsole::CLIENT_ID_UNSPECIFIED;
++	return IsStartupConfig || GetAuthedState(ClientId) >= AuthLevel;
++}
++
+ void CServer::AuthRemoveKey(int KeySlot)
+ {
+ 	m_AuthManager.RemoveKey(KeySlot);
+@@ -3693,7 +3738,12 @@ void CServer::ConAuthAdd(IConsole::IResult *pResult, void *pUser)
+ 	int Level = GetAuthLevel(pLevel);
+ 	if(Level == -1)
+ 	{
+-		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "level can be one of {\"admin\", \"mod(erator)\", \"helper\"}");
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "level can be one of {\"owner\", \"admin\", \"mod(erator)\", \"helper\"}");
++		return;
++	}
++	if(!pThis->CanManageAuthLevel(pResult->m_ClientId, Level))
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "command denied for higher rcon role");
+ 		return;
+ 	}
+ 	// back compat to change "mod", "modder" and so on as parameters to "moderator"
+@@ -3731,7 +3781,12 @@ void CServer::ConAuthAddHashed(IConsole::IResult *pResult, void *pUser)
+ 	int Level = GetAuthLevel(pLevel);
+ 	if(Level == -1)
+ 	{
+-		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "level can be one of {\"admin\", \"mod(erator)\", \"helper\"}");
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "level can be one of {\"owner\", \"admin\", \"mod(erator)\", \"helper\"}");
++		return;
++	}
++	if(!pThis->CanManageAuthLevel(pResult->m_ClientId, Level))
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "command denied for higher rcon role");
+ 		return;
+ 	}
+ 	// back compat to change "mod", "modder" and so on as parameters to "moderator"
+@@ -3784,7 +3839,12 @@ void CServer::ConAuthUpdate(IConsole::IResult *pResult, void *pUser)
+ 	int Level = GetAuthLevel(pLevel);
+ 	if(Level == -1)
+ 	{
+-		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "level can be one of {\"admin\", \"mod(erator)\", \"helper\"}");
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "level can be one of {\"owner\", \"admin\", \"mod(erator)\", \"helper\"}");
++		return;
++	}
++	if(!pThis->CanManageAuthLevel(pResult->m_ClientId, std::max(Level, pManager->KeyLevel(KeySlot))))
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "command denied for higher rcon role");
+ 		return;
+ 	}
+ 	// back compat to change "mod", "modder" and so on as parameters to "moderator"
+@@ -3816,7 +3876,12 @@ void CServer::ConAuthUpdateHashed(IConsole::IResult *pResult, void *pUser)
+ 	int Level = GetAuthLevel(pLevel);
+ 	if(Level == -1)
+ 	{
+-		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "level can be one of {\"admin\", \"mod(erator)\", \"helper\"}");
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "level can be one of {\"owner\", \"admin\", \"mod(erator)\", \"helper\"}");
++		return;
++	}
++	if(!pThis->CanManageAuthLevel(pResult->m_ClientId, std::max(Level, pManager->KeyLevel(KeySlot))))
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "command denied for higher rcon role");
+ 		return;
+ 	}
+ 	// back compat to change "mod", "modder" and so on as parameters to "moderator"
+@@ -3855,6 +3920,11 @@ void CServer::ConAuthRemove(IConsole::IResult *pResult, void *pUser)
+ 		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "ident couldn't be found");
+ 		return;
+ 	}
++	if(!pThis->CanManageAuthLevel(pResult->m_ClientId, pManager->KeyLevel(KeySlot)))
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "command denied for higher rcon role");
++		return;
++	}
+ 
+ 	pThis->AuthRemoveKey(KeySlot);
+ 
+diff --git a/src/engine/server/server.h b/src/engine/server/server.h
+index 8c29919..c7bc70e 100644
+--- a/src/engine/server/server.h
++++ b/src/engine/server/server.h
+@@ -313,6 +313,7 @@ public:
+ 	int GetAuthedState(int ClientId) const override;
+ 	bool IsRconAuthed(int ClientId) const override;
+ 	bool IsRconAuthedAdmin(int ClientId) const override;
++	bool CanManageClient(int ActorClientId, int TargetClientId) const override;
+ 	const char *GetAuthName(int ClientId) const override;
+ 	bool HasAuthHidden(int ClientId) const override;
+ 	bool GetClientInfo(int ClientId, CClientInfo *pInfo) const override;
+@@ -517,6 +518,7 @@ public:
+ 
+ 	static bool CanClientUseCommandCallback(int ClientId, const IConsole::ICommandInfo *pCommand, void *pUser);
+ 	bool CanClientUseCommand(int ClientId, const IConsole::ICommandInfo *pCommand) const;
++	bool CanManageAuthLevel(int ClientId, int AuthLevel) const;
+ 	void AuthRemoveKey(int KeySlot);
+ 	bool ClientPrevIngame(int ClientId) override { return m_aPrevStates[ClientId] == CClient::STATE_INGAME; }
+ 	const char *GetNetErrorString(int ClientId) override { return m_NetServer.ErrorString(ClientId); }
+diff --git a/src/engine/shared/config.h b/src/engine/shared/config.h
+index 0f76772..8800e00 100644
+--- a/src/engine/shared/config.h
++++ b/src/engine/shared/config.h
+@@ -96,6 +96,7 @@ enum
+ 	CFGFLAG_COLALPHA = 1 << 12,
+ 	CFGFLAG_INSENSITIVE = 1 << 13,
+ 	CMDFLAG_PRACTICE = 1 << 14,
++	CMDFLAG_OWNER = 1 << 15,
+ };
+ 
+ #ifdef CONF_DEBUG
+diff --git a/src/engine/shared/console.cpp b/src/engine/shared/console.cpp
+index 99d58a1..61085b0 100644
+--- a/src/engine/shared/console.cpp
++++ b/src/engine/shared/console.cpp
+@@ -594,32 +594,33 @@ void CConsole::ExecuteLineStroked(int Stroke, const char *pStr, int ClientId, bo
+ 					}
+ 					else
+ 					{
+-						if(pCommand->m_Flags & CMDFLAG_TEST && !g_Config.m_SvTestingCommands)
+-						{
+-							Print(OUTPUT_LEVEL_STANDARD, "console", "Test commands aren't allowed, enable them with 'sv_test_cmds 1' in your initial config.");
+-							return;
+-						}
+-
+ 						if(m_pfnTeeHistorianCommandCallback && !(pCommand->m_Flags & CFGFLAG_NONTEEHISTORIC))
+ 						{
+ 							m_pfnTeeHistorianCommandCallback(ClientId, m_FlagMask, pCommand->m_pName, &Result, m_pTeeHistorianCommandUserdata);
+ 						}
+ 
+-						if(Result.m_aSpecialVictim[0])
++						if(Result.m_aSpecialVictim[0] || (Result.m_VictimId.has_value() && m_pfnGetVictimsCommandCallback))
+ 						{
+-							std::optional<std::vector<int>> Victims;
+-							if(m_pfnGetVictimsCommandCallback)
++							if(!m_pfnGetVictimsCommandCallback)
+ 							{
+-								Victims = m_pfnGetVictimsCommandCallback(ClientId, Result.m_aSpecialVictim, m_pGetVictimsCommandUserData);
++								if(Stroke)
++									Print(OUTPUT_LEVEL_STANDARD, "console", "Command cannot be executed on this console: victim resolution is unavailable.");
++								return;
+ 							}
+-							else
++
++							char aVictimId[16];
++							const char *pVictim = Result.m_aSpecialVictim;
++							if(Result.m_VictimId.has_value())
+ 							{
+-								Victims = std::nullopt;
++								str_format(aVictimId, sizeof(aVictimId), "%d", Result.m_VictimId.value());
++								pVictim = aVictimId;
+ 							}
+ 
++							const std::optional<std::vector<int>> Victims = m_pfnGetVictimsCommandCallback(ClientId, pVictim, m_pGetVictimsCommandUserData);
++
+ 							if(!Victims.has_value())
+ 							{
+-								log_error("console", "Invalid victim '%s'", Result.m_aSpecialVictim);
++								log_error("console", "Invalid victim '%s'", pVictim);
+ 								return;
+ 							}
+ 							for(const int VictimId : Victims.value())
+@@ -668,7 +669,11 @@ bool CConsole::CanUseCommand(int ClientId, const IConsole::ICommandInfo *pComman
+ {
+ 	// the fallback is needed for the client and rust tests
+ 	if(!m_pfnCanUseCommandCallback)
+-		return true;
++	{
++		if(pCommand->Flags() & CMDFLAG_OWNER)
++			return false;
++		return !(pCommand->Flags() & CMDFLAG_TEST) || g_Config.m_SvTestingCommands;
++	}
+ 	return m_pfnCanUseCommandCallback(ClientId, pCommand, m_pCanUseCommandUserData);
+ }
+ 
+@@ -1040,7 +1045,6 @@ void CConsole::RegisterTemp(const char *pName, const char *pParams, int Flags, c
+ 	pCommand->m_pUserData = nullptr;
+ 	pCommand->m_Flags = Flags;
+ 	pCommand->m_Temp = true;
+-
+ 	AddCommandSorted(pCommand);
+ }
+ 
+diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
+index 28a49af..6b0b437 100644
+--- a/src/game/server/gamecontext.cpp
++++ b/src/game/server/gamecontext.cpp
+@@ -199,10 +199,23 @@ std::optional<std::vector<int>> CGameContext::ClientsForVictim(int ClientId, con
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUser;
+ 	std::vector<int> vClientIds;
++	auto AddClient = [&](int TargetClientId) {
++		if(!pSelf->Server()->ClientIngame(TargetClientId) || pSelf->Server()->CanManageClient(ClientId, TargetClientId))
++		{
++			vClientIds.emplace_back(TargetClientId);
++			return;
++		}
++
++		char aBuf[128];
++		str_format(aBuf, sizeof(aBuf), "command denied for higher-ranked client %d", TargetClientId);
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", aBuf);
++	};
+ 
+ 	if(!str_comp(pVictim, "me"))
+ 	{
+-		vClientIds.emplace_back(ClientId);
++		if(!in_range(ClientId, 0, pSelf->Server()->MaxClients() - 1))
++			return std::nullopt;
++		AddClient(ClientId);
+ 	}
+ 	else if(!str_comp(pVictim, "all"))
+ 	{
+@@ -212,12 +225,15 @@ std::optional<std::vector<int>> CGameContext::ClientsForVictim(int ClientId, con
+ 			if(!pSelf->Server()->ClientIngame(i))
+ 				continue;
+ 
+-			vClientIds.emplace_back(i);
++			AddClient(i);
+ 		}
+ 	}
+ 	else
+ 	{
+-		return std::nullopt;
++		int TargetClientId;
++		if(!str_toint(pVictim, &TargetClientId) || !in_range(TargetClientId, 0, pSelf->Server()->MaxClients() - 1))
++			return std::nullopt;
++		AddClient(TargetClientId);
+ 	}
+ 
+ 	return std::make_optional(std::move(vClientIds));
+@@ -3658,7 +3674,7 @@ void CGameContext::ConSetTeam(IConsole::IResult *pResult, void *pUserData)
+ 		return;
+ 	}
+ 
+-	int ClientId = std::clamp(pResult->GetInteger(0), 0, (int)MAX_CLIENTS - 1);
++	int ClientId = pResult->GetVictim();
+ 	int Delay = pResult->NumArguments() > 2 ? pResult->GetInteger(2) : 0;
+ 	if(!pSelf->m_apPlayers[ClientId])
+ 		return;
+@@ -3684,13 +3700,26 @@ void CGameContext::ConSetTeamAll(IConsole::IResult *pResult, void *pUserData)
+ 		return;
+ 	}
+ 
++	int NumProtected = 0;
++	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
++	{
++		CPlayer *pPlayer = pSelf->m_apPlayers[ClientId];
++		if(!pPlayer)
++			continue;
++		if(pSelf->Server()->CanManageClient(pResult->m_ClientId, ClientId))
++			pSelf->m_pController->DoTeamChange(pPlayer, Team, false);
++		else
++			NumProtected++;
++	}
++
+ 	char aBuf[256];
+-	str_format(aBuf, sizeof(aBuf), "All players were moved to the %s", pSelf->m_pController->GetTeamName(Team));
++	str_format(aBuf, sizeof(aBuf), "%s players were moved to the %s", NumProtected ? "Eligible" : "All", pSelf->m_pController->GetTeamName(Team));
+ 	pSelf->SendChat(-1, TEAM_ALL, aBuf);
+-
+-	for(auto &pPlayer : pSelf->m_apPlayers)
+-		if(pPlayer)
+-			pSelf->m_pController->DoTeamChange(pPlayer, Team, false);
++	if(NumProtected)
++	{
++		str_format(aBuf, sizeof(aBuf), "set_team_all skipped %d higher-ranked client%s", NumProtected, NumProtected == 1 ? "" : "s");
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", aBuf);
++	}
+ }
+ 
+ void CGameContext::ConHotReload(IConsole::IResult *pResult, void *pUserData)
+@@ -3923,7 +3952,7 @@ void CGameContext::ConForceVote(IConsole::IResult *pResult, void *pUserData)
+ 				str_format(aBuf, sizeof(aBuf), "authorized player forced server option '%s' (%s)", pValue, pReason);
+ 				pSelf->SendChatTarget(-1, aBuf, FLAG_SIX);
+ 				pSelf->m_VoteCreator = pResult->m_ClientId;
+-				pSelf->Console()->ExecuteLine(pOption->m_aCommand, IConsole::CLIENT_ID_UNSPECIFIED);
++				pSelf->Console()->ExecuteLine(pOption->m_aCommand, pResult->m_ClientId);
+ 				break;
+ 			}
+ 
+@@ -3945,6 +3974,11 @@ void CGameContext::ConForceVote(IConsole::IResult *pResult, void *pUserData)
+ 			pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Invalid client id to kick");
+ 			return;
+ 		}
++		if(!pSelf->Server()->CanManageClient(pResult->m_ClientId, KickId))
++		{
++			pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "force vote denied for higher-ranked client");
++			return;
++		}
+ 
+ 		if(!g_Config.m_SvVoteKickBantime)
+ 		{
+@@ -3965,6 +3999,11 @@ void CGameContext::ConForceVote(IConsole::IResult *pResult, void *pUserData)
+ 			pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "Invalid client id to move");
+ 			return;
+ 		}
++		if(!pSelf->Server()->CanManageClient(pResult->m_ClientId, SpectateId))
++		{
++			pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "force vote denied for higher-ranked client");
++			return;
++		}
+ 
+ 		str_format(aBuf, sizeof(aBuf), "'%s' was moved to spectator (%s)", pSelf->Server()->ClientName(SpectateId), pReason);
+ 		pSelf->SendChatTarget(-1, aBuf);
+@@ -4326,7 +4365,7 @@ void CGameContext::OnConsoleInit()
+ 	Console()->Register("mod_alert", "v[id] r[message]", CFGFLAG_SERVER, ConModAlert, this, "Send a moderator alert message to player");
+ 	Console()->Register("broadcast", "r[message]", CFGFLAG_SERVER, ConBroadcast, this, "Broadcast message");
+ 	Console()->Register("say", "r[message]", CFGFLAG_SERVER, ConSay, this, "Say in chat");
+-	Console()->Register("set_team", "i[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
++	Console()->Register("set_team", "v[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
+ 	Console()->Register("set_team_all", "i[team-id]", CFGFLAG_SERVER, ConSetTeamAll, this, "Set team for all players (spectators = -1, game = 0)");
+ 	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
+ 	Console()->Register("reload_censorlist", "", CFGFLAG_SERVER, ConReloadCensorlist, this, "Reload the censorlist");
+@@ -4376,8 +4415,8 @@ void CGameContext::RegisterDDRaceCommands()
+ 	Console()->Register("unweapons", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnWeapons, this, "Removes all weapons from you");
+ 	Console()->Register("ninja", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConNinja, this, "Makes you a ninja");
+ 	Console()->Register("unninja", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnNinja, this, "Removes ninja from you");
+-	Console()->Register("super", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConSuper, this, "Makes you super");
+-	Console()->Register("unsuper", "", CFGFLAG_SERVER, ConUnSuper, this, "Removes super from you");
++	Console()->Register("super", "?v[victim]", CFGFLAG_SERVER | CMDFLAG_TEST, ConSuper, this, "Makes you or another client super");
++	Console()->Register("unsuper", "?v[victim]", CFGFLAG_SERVER, ConUnSuper, this, "Removes super from you or another client");
+ 	Console()->Register("invincible", "?i['0'|'1']", CFGFLAG_SERVER | CMDFLAG_TEST, ConToggleInvincible, this, "Toggles invincible mode");
+ 	Console()->Register("infinite_jump", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConEndlessJump, this, "Gives you infinite jump");
+ 	Console()->Register("uninfinite_jump", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnEndlessJump, this, "Removes infinite jump from you");
+diff --git a/src/game/server/mutes.cpp b/src/game/server/mutes.cpp
+index ef71443..6718587 100644
+--- a/src/game/server/mutes.cpp
++++ b/src/game/server/mutes.cpp
+@@ -21,6 +21,21 @@ static NETADDR KeyAddress(NETADDR Addr)
+ 	return Addr;
+ }
+ 
++static bool CanManageAddress(CGameContext *pGameServer, int ActorClientId, const NETADDR *pAddr)
++{
++	for(int ClientId = 0; ClientId < pGameServer->Server()->MaxClients(); ClientId++)
++	{
++		if(!pGameServer->Server()->ClientIngame(ClientId) || net_addr_comp_noport(pAddr, pGameServer->Server()->ClientAddr(ClientId)) != 0)
++			continue;
++		if(!pGameServer->Server()->CanManageClient(ActorClientId, ClientId))
++		{
++			pGameServer->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "auth", "address command denied for higher-ranked client");
++			return false;
++		}
++	}
++	return true;
++}
++
+ int CMute::SecondsLeft() const
+ {
+ 	return m_Expire - time_timestamp();
+@@ -267,6 +282,8 @@ void CGameContext::ConMuteIp(IConsole::IResult *pResult, void *pUserData)
+ 		log_info("mutes", "Invalid IP address to mute: %s", pResult->GetString(0));
+ 		return;
+ 	}
++	if(!CanManageAddress(pSelf, pResult->m_ClientId, &Addr))
++		return;
+ 
+ 	const char *pReason = pResult->NumArguments() > 2 ? pResult->GetString(2) : "";
+ 
+@@ -304,6 +321,8 @@ void CGameContext::ConUnmuteIp(IConsole::IResult *pResult, void *pUserData)
+ 		log_info("mutes", "Invalid IP address to unmute: %s", pResult->GetString(0));
+ 		return;
+ 	}
++	if(!CanManageAddress(pSelf, pResult->m_ClientId, &Addr))
++		return;
+ 
+ 	pSelf->m_Mutes.UnmuteAddr(&Addr);
+ }
+@@ -345,6 +364,8 @@ void CGameContext::ConVoteMuteIp(IConsole::IResult *pResult, void *pUserData)
+ 		log_info("votemutes", "Invalid IP address to mute: %s", pResult->GetString(0));
+ 		return;
+ 	}
++	if(!CanManageAddress(pSelf, pResult->m_ClientId, &Addr))
++		return;
+ 
+ 	const char *pReason = pResult->NumArguments() > 2 ? pResult->GetString(2) : "";
+ 
+@@ -382,6 +403,8 @@ void CGameContext::ConVoteUnmuteIp(IConsole::IResult *pResult, void *pUserData)
+ 		log_info("votemutes", "Invalid IP address to unmute: %s", pResult->GetString(0));
+ 		return;
+ 	}
++	if(!CanManageAddress(pSelf, pResult->m_ClientId, &Addr))
++		return;
+ 
+ 	pSelf->m_VoteMutes.UnmuteAddr(&Addr);
+ }
+diff --git a/src/game/server/player.cpp b/src/game/server/player.cpp
+index 45ea48c..f31baee 100644
+--- a/src/game/server/player.cpp
++++ b/src/game/server/player.cpp
+@@ -14,6 +14,7 @@
+ 
+ #include <engine/antibot.h>
+ #include <engine/server.h>
++#include <engine/server/ddx_auth.h>
+ #include <engine/shared/config.h>
+ 
+ #include <game/gamecore.h>
+@@ -437,7 +438,7 @@ void CPlayer::Snap(int SnappingClient)
+ 
+ 	CNetObj_DDNetPlayer DDNetPlayer = {};
+ 	if((SnappingClient >= 0 && Server()->IsRconAuthed(SnappingClient)) || !Server()->HasAuthHidden(m_ClientId))
+-		DDNetPlayer.m_AuthLevel = Server()->GetAuthedState(m_ClientId);
++		DDNetPlayer.m_AuthLevel = DdxAuth::PublicAuthLevel(Server()->GetAuthedState(m_ClientId));
+ 	else
+ 		DDNetPlayer.m_AuthLevel = AUTHED_NO;
+ 
+diff --git a/src/test/console_victim_test.cpp b/src/test/console_victim_test.cpp
+new file mode 100644
+index 0000000..4fea98b
+--- /dev/null
++++ b/src/test/console_victim_test.cpp
+@@ -0,0 +1,70 @@
++#include "test.h"
++
++#include <base/str.h>
++
++#include <engine/console.h>
++#include <engine/shared/config.h>
++#include <engine/shared/console.h>
++
++#include <gtest/gtest.h>
++
++#include <optional>
++#include <vector>
++
++namespace
++{
++	int g_NumExecutions = 0;
++	int g_LastVictim = -1;
++
++	void VictimRecorder(IConsole::IResult *pResult, void *)
++	{
++		g_NumExecutions++;
++		g_LastVictim = pResult->GetVictim();
++	}
++
++	std::optional<std::vector<int>> NumericVictims(int ClientId, const char *pVictim, void *)
++	{
++		if(!str_comp(pVictim, "me"))
++		{
++			if(ClientId < 0)
++				return std::nullopt;
++			return std::vector<int>{ClientId};
++		}
++		int Target;
++		if(!str_toint(pVictim, &Target))
++			return std::nullopt;
++		return std::vector<int>{Target};
++	}
++} // namespace
++
++TEST(ConsoleVictim, NumericVictimKeepsStandaloneConsoleContract)
++{
++	auto pConsole = CreateConsole(CFGFLAG_SERVER);
++	pConsole->StoreCommands(false);
++
++	g_NumExecutions = 0;
++	pConsole->Register("victimrec", "?v[victim]", CFGFLAG_SERVER, VictimRecorder, nullptr, "victim command recorder");
++
++	pConsole->ExecuteLine("victimrec 3", IConsole::CLIENT_ID_UNSPECIFIED);
++	EXPECT_EQ(g_NumExecutions, 1);
++	EXPECT_EQ(g_LastVictim, 3);
++
++	pConsole->SetGetVictimsCommandCallback(NumericVictims, nullptr);
++	pConsole->ExecuteLine("victimrec 3", IConsole::CLIENT_ID_UNSPECIFIED);
++	EXPECT_EQ(g_NumExecutions, 2);
++	EXPECT_EQ(g_LastVictim, 3);
++}
++
++TEST(ConsoleVictim, BareOptionalVictimResolvesToCaller)
++{
++	auto pConsole = CreateConsole(CFGFLAG_SERVER);
++	pConsole->StoreCommands(false);
++
++	g_NumExecutions = 0;
++	pConsole->Register("victimrec", "?v[victim]", CFGFLAG_SERVER, VictimRecorder, nullptr, "victim command recorder");
++	pConsole->SetGetVictimsCommandCallback(NumericVictims, nullptr);
++
++	pConsole->ExecuteLine("victimrec", 7);
++	EXPECT_EQ(g_NumExecutions, 1);
++	EXPECT_EQ(g_LastVictim, 7);
++}
+diff --git a/src/test/ddx_auth_test.cpp b/src/test/ddx_auth_test.cpp
+new file mode 100644
+index 0000000..108c275
+--- /dev/null
++++ b/src/test/ddx_auth_test.cpp
+@@ -0,0 +1,120 @@
++#include <engine/console.h>
++#include <engine/server/authmanager.h>
++#include <engine/server/ddx_auth.h>
++#include <engine/shared/config.h>
++
++#include <base/str.h>
++
++#include <gtest/gtest.h>
++
++namespace
++{
++struct CCommandPolicy
++{
++	bool m_TestCommandsEnabled = false;
++};
++
++bool CanUseDdxCommand(int ClientId, const IConsole::ICommandInfo *pCommand, void *pUser)
++{
++	const CCommandPolicy *pPolicy = static_cast<CCommandPolicy *>(pUser);
++	if(pCommand->Flags() & CMDFLAG_OWNER && !DdxAuth::IsOwner(ClientId))
++		return false;
++	if(pCommand->Flags() & CMDFLAG_TEST && !DdxAuth::CanUseTestCommands(ClientId, pPolicy->m_TestCommandsEnabled))
++		return false;
++	return true;
++}
++
++void CountCommand(IConsole::IResult *, void *pUser)
++{
++	int *pCount = static_cast<int *>(pUser);
++	(*pCount)++;
++}
++
++std::optional<std::vector<int>> AuthorizedVictim(int ClientId, const char *pVictim, void *)
++{
++	int TargetClientId;
++	if(!str_toint(pVictim, &TargetClientId))
++		return std::nullopt;
++	if(!DdxAuth::CanManage(ClientId, TargetClientId))
++		return std::vector<int>{};
++	return std::vector<int>{TargetClientId};
++}
++
++void RecordVictim(IConsole::IResult *pResult, void *pUser)
++{
++	int *pVictim = static_cast<int *>(pUser);
++	*pVictim = pResult->GetVictim();
++}
++} // namespace
++
++TEST(DdxAuth, DefinesOwnerAboveAdmin)
++{
++	EXPECT_GT(DdxAuth::OWNER, AUTHED_ADMIN);
++	EXPECT_TRUE(DdxAuth::IsOwner(DdxAuth::OWNER));
++	EXPECT_FALSE(DdxAuth::IsOwner(AUTHED_ADMIN));
++	EXPECT_TRUE(DdxAuth::CanManage(DdxAuth::OWNER, AUTHED_ADMIN));
++	EXPECT_FALSE(DdxAuth::CanManage(AUTHED_ADMIN, DdxAuth::OWNER));
++	EXPECT_EQ(DdxAuth::PublicAuthLevel(DdxAuth::OWNER), AUTHED_ADMIN);
++}
++
++TEST(DdxAuth, RegistersOwnerAuthenticationKeys)
++{
++	CAuthManager AuthManager;
++	const CRconRole *pOwnerRole = AuthManager.FindRole(RoleName::OWNER);
++	ASSERT_NE(pOwnerRole, nullptr);
++	EXPECT_EQ(pOwnerRole->Rank(), DdxAuth::OWNER);
++	EXPECT_STREQ(CAuthManager::AuthLevelToRoleName(DdxAuth::OWNER), RoleName::OWNER);
++
++	const int OwnerKey = AuthManager.AddKey("test_owner", "not-a-production-secret", RoleName::OWNER);
++	ASSERT_GE(OwnerKey, 0);
++	EXPECT_EQ(AuthManager.KeyLevel(OwnerKey), DdxAuth::OWNER);
++	EXPECT_TRUE(AuthManager.CheckKey(OwnerKey, "not-a-production-secret"));
++	EXPECT_FALSE(AuthManager.CheckKey(OwnerKey, "wrong"));
++}
++
++TEST(DdxAuth, KeepsTestAndOwnerCommandsExclusive)
++{
++	auto pConsole = CreateConsole(CFGFLAG_SERVER);
++	CCommandPolicy Policy;
++	pConsole->SetCanUseCommandCallback(CanUseDdxCommand, &Policy);
++	pConsole->StoreCommands(false);
++
++	int TestExecutions = 0;
++	int OwnerExecutions = 0;
++	pConsole->Register("ddx_test", "", CFGFLAG_SERVER | CMDFLAG_TEST, CountCommand, &TestExecutions, "test command");
++	pConsole->Register("ddx_owner", "", CFGFLAG_SERVER | CMDFLAG_OWNER, CountCommand, &OwnerExecutions, "owner command");
++
++	pConsole->ExecuteLine("ddx_test", AUTHED_ADMIN);
++	pConsole->ExecuteLine("ddx_owner", AUTHED_ADMIN);
++	EXPECT_EQ(TestExecutions, 0);
++	EXPECT_EQ(OwnerExecutions, 0);
++
++	pConsole->ExecuteLine("ddx_test", DdxAuth::OWNER);
++	pConsole->ExecuteLine("ddx_owner", DdxAuth::OWNER);
++	EXPECT_EQ(TestExecutions, 1);
++	EXPECT_EQ(OwnerExecutions, 1);
++
++	Policy.m_TestCommandsEnabled = true;
++	pConsole->ExecuteLine("ddx_test", AUTHED_ADMIN);
++	pConsole->ExecuteLine("ddx_owner", AUTHED_ADMIN);
++	EXPECT_EQ(TestExecutions, 2);
++	EXPECT_EQ(OwnerExecutions, 1);
++}
++
++TEST(DdxAuth, AuthorizesNumericVictimsBeforeExecution)
++{
++	auto pConsole = CreateConsole(CFGFLAG_SERVER);
++	CCommandPolicy Policy;
++	pConsole->SetCanUseCommandCallback(CanUseDdxCommand, &Policy);
++	pConsole->SetGetVictimsCommandCallback(AuthorizedVictim, nullptr);
++	pConsole->StoreCommands(false);
++
++	int ExecutedVictim = -1;
++	pConsole->Register("ddx_target", "v[id]", CFGFLAG_SERVER, RecordVictim, &ExecutedVictim, "target command");
++
++	pConsole->ExecuteLine("ddx_target 4", AUTHED_ADMIN);
++	EXPECT_EQ(ExecutedVictim, -1);
++
++	pConsole->ExecuteLine("ddx_target 3", DdxAuth::OWNER);
++	EXPECT_EQ(ExecutedVictim, AUTHED_ADMIN);
++}
