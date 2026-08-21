@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LgcY-v2 <menhardandre@gmail.com>
+Date: Fri, 21 Aug 2026 21:08:44 +0000
+Subject: [PATCH 5/8] feat: target super commands
+
+---
+ src/game/server/ddracecommands.cpp | 22 ++++++++++++++++++----
+ 1 file changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/src/game/server/ddracecommands.cpp b/src/game/server/ddracecommands.cpp
+index 862556a..2f9e0a9 100644
+--- a/src/game/server/ddracecommands.cpp
++++ b/src/game/server/ddracecommands.cpp
+@@ -146,25 +146,39 @@ void CGameContext::ConUnEndlessHook(IConsole::IResult *pResult, void *pUserData)
+ void CGameContext::ConSuper(IConsole::IResult *pResult, void *pUserData)
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
+-	if(!CheckClientId(pResult->m_ClientId))
++	const int ClientId = pResult->NumArguments() > 0 ? pResult->GetVictim() : pResult->m_ClientId;
++	if(!CheckClientId(ClientId))
++	{
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "super", "a client must be specified outside rcon");
+ 		return;
+-	CCharacter *pChr = pSelf->GetPlayerChar(pResult->m_ClientId);
++	}
++	CCharacter *pChr = pSelf->GetPlayerChar(ClientId);
+ 	if(pChr && !pChr->IsSuper())
+ 	{
+ 		pChr->SetSuper(true);
+ 		pChr->Unfreeze();
++		char aBuf[64];
++		str_format(aBuf, sizeof(aBuf), "gave super to client %d", ClientId);
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "super", aBuf);
+ 	}
+ }
+ 
+ void CGameContext::ConUnSuper(IConsole::IResult *pResult, void *pUserData)
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
+-	if(!CheckClientId(pResult->m_ClientId))
++	const int ClientId = pResult->NumArguments() > 0 ? pResult->GetVictim() : pResult->m_ClientId;
++	if(!CheckClientId(ClientId))
++	{
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "unsuper", "a client must be specified outside rcon");
+ 		return;
+-	CCharacter *pChr = pSelf->GetPlayerChar(pResult->m_ClientId);
++	}
++	CCharacter *pChr = pSelf->GetPlayerChar(ClientId);
+ 	if(pChr && pChr->IsSuper())
+ 	{
+ 		pChr->SetSuper(false);
++		char aBuf[64];
++		str_format(aBuf, sizeof(aBuf), "removed super from client %d", ClientId);
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "unsuper", aBuf);
+ 	}
+ }
+ 
