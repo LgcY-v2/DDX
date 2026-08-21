@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM_SOURCE="$ROOT_DIR/source/ddnet"
 PATCH_FILES=(
-	"$ROOT_DIR/patches/0001-feat-server-add-stock-client-map-vote-catalog.patch"
-	"$ROOT_DIR/patches/0002-feat-server-brand-ddx.patch"
+	"$ROOT_DIR/patches/0001-feat-add-map-archive-votes.patch"
+	"$ROOT_DIR/patches/0002-feat-brand-server-as-ddx.patch"
 )
 PATCHED_SOURCE="$ROOT_DIR/build/source-map-voting"
 PATCHED_BUILD="$ROOT_DIR/build/ddnet-map-voting"

@@ -1,4 +1,14 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LgcY-v2 <menhardandre@gmail.com>
+Date: Fri, 21 Aug 2026 21:07:34 +0000
+Subject: [PATCH 2/8] feat: brand the server as ddx
+
+---
+ src/game/server/gamemodes/ddnet.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
 diff --git a/src/game/server/gamemodes/ddnet.cpp b/src/game/server/gamemodes/ddnet.cpp
+index 0d80ac7..24ba211 100644
 --- a/src/game/server/gamemodes/ddnet.cpp
 +++ b/src/game/server/gamemodes/ddnet.cpp
 @@ -16,8 +16,8 @@
