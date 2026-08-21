@@ -45,7 +45,7 @@ new file mode 100644
 index 0000000..f830218
 --- /dev/null
 +++ b/src/game/server/ddx_rapid_fire.h
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,29 @@
 +#ifndef GAME_SERVER_DDX_RAPID_FIRE_H
 +#define GAME_SERVER_DDX_RAPID_FIRE_H
 +
@@ -55,12 +55,17 @@ index 0000000..f830218
 +{
 +constexpr int DelayTicks(int DelayMs, int TickSpeed)
 +{
-+	return std::max(1, (DelayMs * TickSpeed + 999) / 1000);
++	return std::max(1, (DelayMs * TickSpeed + 500) / 1000);
 +}
 +
 +constexpr int DelayMs(int DelayTicks, int TickSpeed)
 +{
 +	return (DelayTicks * 1000 + TickSpeed - 1) / TickSpeed;
++}
++
++constexpr float ClientFireDelayMs(int DelayTicks, int TickSpeed)
++{
++	return std::max(0, DelayTicks - 1) * 1000.0f / TickSpeed;
 +}
 +
 +constexpr bool CanFire(int Tick, int LastFireTick, int DelayTicks)
@@ -187,7 +192,7 @@ index 6b0b437..86045b4 100644
  	CTuningParams Params = m_aTuningList[Zone];
 +	if(m_apPlayers[ClientId]->m_AipDelayTicks > 0)
 +	{
-+		const float DelayMs = m_apPlayers[ClientId]->m_AipDelayTicks * 1000.0f / Server()->TickSpeed();
++		const float DelayMs = DdxRapidFire::ClientFireDelayMs(m_apPlayers[ClientId]->m_AipDelayTicks, Server()->TickSpeed());
 +		Params.m_HammerFireDelay = DelayMs;
 +		Params.m_HammerHitFireDelay = DelayMs;
 +		Params.m_GunFireDelay = DelayMs;
@@ -320,18 +325,21 @@ new file mode 100644
 index 0000000..be77ffe
 --- /dev/null
 +++ b/src/test/ddx_rapid_fire_test.cpp
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,22 @@
 +#include <game/server/ddx_rapid_fire.h>
 +
 +#include <gtest/gtest.h>
 +
-+TEST(DdxRapidFire, RoundsDelayUpToServerTicks)
++TEST(DdxRapidFire, RoundsDelayToNearestServerTick)
 +{
 +	EXPECT_EQ(DdxRapidFire::DelayTicks(1, 50), 1);
 +	EXPECT_EQ(DdxRapidFire::DelayTicks(20, 50), 1);
-+	EXPECT_EQ(DdxRapidFire::DelayTicks(21, 50), 2);
++	EXPECT_EQ(DdxRapidFire::DelayTicks(25, 50), 1);
++	EXPECT_EQ(DdxRapidFire::DelayTicks(30, 50), 2);
 +	EXPECT_EQ(DdxRapidFire::DelayTicks(100, 50), 5);
 +	EXPECT_EQ(DdxRapidFire::DelayMs(5, 50), 100);
++	EXPECT_FLOAT_EQ(DdxRapidFire::ClientFireDelayMs(1, 50), 0.0f);
++	EXPECT_FLOAT_EQ(DdxRapidFire::ClientFireDelayMs(2, 50), 20.0f);
 +}
 +
 +TEST(DdxRapidFire, UsesAnAbsoluteFireDeadline)

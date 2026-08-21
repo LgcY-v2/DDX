@@ -48,7 +48,7 @@ aip 100
 aip 100 3
 ```
 
-The delay is milliseconds and rounds up to a 20 ms server tick. Bare `aip`
+The delay is milliseconds and rounds to the nearest 20 ms server tick. Bare `aip`
 toggles the fastest setting. AIP state survives map changes.
 
 ## Archive
