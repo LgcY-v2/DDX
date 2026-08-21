@@ -15,7 +15,6 @@ PATCH_FILES=(
 )
 PATCHED_SOURCE="$ROOT_DIR/build/source-map-voting"
 PATCHED_BUILD="$ROOT_DIR/build/ddnet-map-voting"
-RUNTIME_BINARY="$ROOT_DIR/build/ddnet/DDNet-Server"
 SYSROOT="$ROOT_DIR/.toolchain/sysroot"
 CARGO_HOME="$ROOT_DIR/.toolchain/cargo"
 RUSTUP_HOME="$ROOT_DIR/.toolchain/rustup"
@@ -95,9 +94,4 @@ STAGED_SOURCE=""
 touch "$PATCHED_SOURCE/scripts/git_revision.py"
 "$CMAKE" --build "$PATCHED_BUILD" --target DDNet-Server -j "${JOBS:-2}"
 
-# Keep the unit's stable binary path and replace it only after a successful
-# compile and link, so a failed build cannot damage the running deployment.
-install -m 755 "$PATCHED_BUILD/DDNet-Server" "$RUNTIME_BINARY.next"
-mv -f "$RUNTIME_BINARY.next" "$RUNTIME_BINARY"
-
-echo "Built patched DDNet server at $RUNTIME_BINARY"
+echo "Built patched DDNet server at $PATCHED_BUILD/DDNet-Server"

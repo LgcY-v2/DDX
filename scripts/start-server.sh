@@ -11,7 +11,7 @@ PORT=8305
 install -d -m 700 "$SERVER_DIR/logs" "$SERVER_DIR/run" "$SERVER_DIR/state"
 
 if [[ ! -x "$BINARY" ]]; then
-	echo "DDNet server binary is missing; run scripts/build-server.sh first." >&2
+	echo "DDNet server binary is missing; run scripts/build-server.sh and scripts/install-server.sh first." >&2
 	exit 1
 fi
 
