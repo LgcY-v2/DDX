@@ -1,0 +1,91 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LgcY-v2 <menhardandre@gmail.com>
+Date: Fri, 21 Aug 2026 21:10:14 +0000
+Subject: [PATCH 7/8] fix: throttle archive map loads
+
+- keep the cooldown through map reloads
+- start it only after a map is queued
+---
+ src/engine/shared/config_variables.h |  1 +
+ src/game/server/gamecontext.cpp      | 14 ++++++++++++++
+ src/game/server/gamecontext.h        |  2 ++
+ 3 files changed, 17 insertions(+)
+
+diff --git a/src/engine/shared/config_variables.h b/src/engine/shared/config_variables.h
+index e690a62..8c28f20 100644
+--- a/src/engine/shared/config_variables.h
++++ b/src/engine/shared/config_variables.h
+@@ -605,6 +605,7 @@ MACRO_CONFIG_STR(SvMapArchiveExtractor, sv_map_archive_extractor, IO_MAX_PATH_LE
+ MACRO_CONFIG_STR(SvMapArchiveState, sv_map_archive_state, IO_MAX_PATH_LENGTH, "state/map-archive-collections.tsv", CFGFLAG_SERVER, "Persistent search collection state file")
+ MACRO_CONFIG_STR(SvMapArchiveCache, sv_map_archive_cache, IO_MAX_PATH_LENGTH, "maps/archive", CFGFLAG_SERVER, "Bounded extracted map cache below the save path")
+ MACRO_CONFIG_INT(SvMapArchiveCacheMegabytes, sv_map_archive_cache_megabytes, 2048, 64, 8192, CFGFLAG_SERVER, "Maximum map archive cache size in MiB")
++MACRO_CONFIG_INT(SvMapArchiveCooldown, sv_map_archive_cooldown, 30, 0, 3600, CFGFLAG_SERVER | CFGFLAG_STORE, "Minimum seconds between archive map loads (0 disables the limit)")
+ MACRO_CONFIG_INT(SvMapArchiveCacheMaps, sv_map_archive_cache_maps, 256, 2, 2048, CFGFLAG_SERVER, "Maximum number of maps in the map archive cache")
+ 
+ MACRO_CONFIG_STR(SvAnnouncementFilename, sv_announcement_filename, IO_MAX_PATH_LENGTH, "announcement.txt", CFGFLAG_SERVER, "File which contains the announcements, one on each line")
+diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
+index 86045b4..237e34f 100644
+--- a/src/game/server/gamecontext.cpp
++++ b/src/game/server/gamecontext.cpp
+@@ -4165,6 +4165,17 @@ void CGameContext::ConMapSearch(IConsole::IResult *pResult, void *pUserData)
+ void CGameContext::ConArchiveMap(IConsole::IResult *pResult, void *pUserData)
+ {
+ 	auto *pSelf = static_cast<CGameContext *>(pUserData);
++
++	const int64_t Now = time_get();
++	const int64_t Cooldown = g_Config.m_SvMapArchiveCooldown * time_freq();
++	if(Cooldown > 0 && pSelf->m_LastArchiveMapQueueTime > 0 && pSelf->m_LastArchiveMapQueueTime + Cooldown > Now)
++	{
++		const int SecondsLeft = (pSelf->m_LastArchiveMapQueueTime + Cooldown - Now + time_freq() - 1) / time_freq();
++		char aMessage[128];
++		str_format(aMessage, sizeof(aMessage), "The archive is resting before preparing another map; try again in %d second%s", SecondsLeft, SecondsLeft == 1 ? "" : "s");
++		pSelf->SendChat(-1, TEAM_ALL, aMessage);
++		return;
++	}
+ 	std::string DisplayName;
+ 	std::string Error;
+ 	if(!pSelf->m_MapArchive.QueueMap(pResult->GetString(0), pSelf->Engine(), pSelf->Storage(), g_Config.m_SvMapArchiveArchive, g_Config.m_SvMapArchiveDelta, g_Config.m_SvMapArchiveExtractor, g_Config.m_SvMapArchiveCache, g_Config.m_SvMapArchiveCacheMegabytes, g_Config.m_SvMapArchiveCacheMaps, pSelf->Map()->FullName(), &DisplayName, &Error))
+@@ -4174,6 +4185,7 @@ void CGameContext::ConArchiveMap(IConsole::IResult *pResult, void *pUserData)
+ 		pSelf->SendChat(-1, TEAM_ALL, aMessage);
+ 		return;
+ 	}
++	pSelf->m_LastArchiveMapQueueTime = Now;
+ 	pSelf->m_LastMapArchiveProgressMessage = 0;
+ 	char aMessage[256];
+ 	str_format(aMessage, sizeof(aMessage), "Vote passed. Preparing %s from the verified archive; solid-map extraction may take a little while.", DisplayName.c_str());
+@@ -4635,6 +4647,7 @@ void CGameContext::RegisterChatCommands()
+ void CGameContext::OnInit(const void *pPersistentData)
+ {
+ 	const CPersistentData *pPersistent = (const CPersistentData *)pPersistentData;
++	m_LastArchiveMapQueueTime = pPersistent ? pPersistent->m_LastArchiveMapQueueTime : 0;
+ 
+ 	m_pServer = Kernel()->RequestInterface<IServer>();
+ 	m_pConfigManager = Kernel()->RequestInterface<IConfigManager>();
+@@ -5088,6 +5101,7 @@ void CGameContext::OnShutdown(void *pPersistentData)
+ 	{
+ 		new(pPersistent) CPersistentData();
+ 		pPersistent->m_PrevGameUuid = m_GameUuid;
++		pPersistent->m_LastArchiveMapQueueTime = m_LastArchiveMapQueueTime;
+ 	}
+ 
+ 	Antibot()->RoundEnd();
+diff --git a/src/game/server/gamecontext.h b/src/game/server/gamecontext.h
+index 96fd021..ade72d4 100644
+--- a/src/game/server/gamecontext.h
++++ b/src/game/server/gamecontext.h
+@@ -192,6 +192,7 @@ class CGameContext : public IGameServer
+ 	{
+ 	public:
+ 		CUuid m_PrevGameUuid;
++		int64_t m_LastArchiveMapQueueTime = 0;
+ 	};
+ 
+ 	class CPersistentClientData
+@@ -299,6 +300,7 @@ public:
+ 	CMapVoteCatalog m_MapVoteCatalog;
+ 	CMapArchive m_MapArchive;
+ 	int m_LastMapArchiveSearchTick = -1;
++	int64_t m_LastArchiveMapQueueTime = 0;
+ 	int64_t m_LastMapArchiveProgressMessage = 0;
+ 
+ 	// helper functions

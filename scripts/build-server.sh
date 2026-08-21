@@ -10,6 +10,7 @@ PATCH_FILES=(
 	"$ROOT_DIR/patches/0004-feat-add-owner-rcon.patch"
 	"$ROOT_DIR/patches/0005-feat-target-super-commands.patch"
 	"$ROOT_DIR/patches/0006-feat-add-aip.patch"
+	"$ROOT_DIR/patches/0007-fix-throttle-archive-map-loads.patch"
 )
 PATCHED_SOURCE="$ROOT_DIR/build/source-map-voting"
 PATCHED_BUILD="$ROOT_DIR/build/ddnet-map-voting"
