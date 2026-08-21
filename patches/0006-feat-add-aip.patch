@@ -255,7 +255,7 @@ index 6b0b437..86045b4 100644
 +	else
 +	{
 +		const int DelayMs = DdxRapidFire::DelayMs(pPlayer->m_AipDelayTicks, pSelf->Server()->TickSpeed());
-+		str_format(aBuf, sizeof(aBuf), "rapid fire client %d: %d ms (%d shots/s)", ClientId, DelayMs, pSelf->Server()->TickSpeed() / pPlayer->m_AipDelayTicks);
++		str_format(aBuf, sizeof(aBuf), "rapid fire client %d: %d ms between shots", ClientId, DelayMs);
 +	}
 +	pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "aip", aBuf);
 +}
