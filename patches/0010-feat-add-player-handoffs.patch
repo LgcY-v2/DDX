@@ -1,0 +1,242 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2923,6 +2923,7 @@ if(SERVER)
+     main.cpp
+     name_ban.cpp
+     name_ban.h
++    redirect_admission.h
+     register.cpp
+     register.h
+     server.cpp
+diff --git a/src/engine/server/redirect_admission.h b/src/engine/server/redirect_admission.h
+new file mode 100644
+--- /dev/null
++++ b/src/engine/server/redirect_admission.h
+@@ -0,0 +1,64 @@
++#ifndef ENGINE_SERVER_REDIRECT_ADMISSION_H
++#define ENGINE_SERVER_REDIRECT_ADMISSION_H
++
++#include <base/net.h>
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++class CRedirectAdmission
++{
++	struct CEntry
++	{
++		NETADDR m_Address;
++		int64_t m_ExpiresAt;
++	};
++
++	static constexpr size_t MAX_ENTRIES = 128;
++	std::vector<CEntry> m_vEntries;
++
++	void RemoveExpired(int64_t Now)
++	{
++		m_vEntries.erase(
++			std::remove_if(m_vEntries.begin(), m_vEntries.end(), [Now](const CEntry &Entry) {
++				return Entry.m_ExpiresAt <= Now;
++			}),
++			m_vEntries.end());
++	}
++
++public:
++	bool Add(const NETADDR &Address, int64_t ExpiresAt, int64_t Now)
++	{
++		RemoveExpired(Now);
++		if(ExpiresAt <= Now || m_vEntries.size() >= MAX_ENTRIES)
++			return false;
++
++		NETADDR AddressWithoutPort = Address;
++		AddressWithoutPort.port = 0;
++		m_vEntries.push_back({AddressWithoutPort, ExpiresAt});
++		return true;
++	}
++
++	bool Consume(const NETADDR &Address, int64_t Now)
++	{
++		RemoveExpired(Now);
++		auto Iterator = std::find_if(m_vEntries.begin(), m_vEntries.end(), [&Address](const CEntry &Entry) {
++			return net_addr_comp_noport(&Entry.m_Address, &Address) == 0;
++		});
++		if(Iterator == m_vEntries.end())
++			return false;
++
++		m_vEntries.erase(Iterator);
++		return true;
++	}
++
++	size_t Size(int64_t Now)
++	{
++		RemoveExpired(Now);
++		return m_vEntries.size();
++	}
++};
++
++#endif
+diff --git a/src/engine/server/server.cpp b/src/engine/server/server.cpp
+--- a/src/engine/server/server.cpp
++++ b/src/engine/server/server.cpp
+@@ -2017,7 +2017,8 @@ void CServer::OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPassw
+ 	if(!pPassword)
+ 		return;
+ 
+-	if(Config()->m_Password[0] != 0 && str_comp(Config()->m_Password, pPassword) != 0)
++	const bool PasswordAccepted = Config()->m_Password[0] == 0 || str_comp(Config()->m_Password, pPassword) == 0;
++	if(!PasswordAccepted && !m_RedirectAdmission.Consume(*ClientAddr(ClientId), time_get()))
+ 	{
+ 		// wrong password
+ 		m_NetServer.Drop(ClientId, "Wrong password");
+@@ -3592,6 +3593,69 @@ void CServer::ConKick(IConsole::IResult *pResult, void *pUser)
+ 	}
+ }
+ 
++void CServer::ConRedirect(IConsole::IResult *pResult, void *pUser)
++{
++	CServer *pThis = static_cast<CServer *>(pUser);
++	if(pResult->m_ClientId != IConsole::CLIENT_ID_UNSPECIFIED)
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "redirect failed: local console only");
++		return;
++	}
++	const int ClientId = pResult->GetInteger(0);
++	const int Port = pResult->GetInteger(1);
++	if(ClientId < 0 || ClientId >= MAX_CLIENTS || pThis->m_aClients[ClientId].m_State < CClient::STATE_READY)
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "redirect failed: invalid client id");
++		return;
++	}
++	if(Port < 1 || Port > 65535)
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "redirect failed: invalid port");
++		return;
++	}
++	if(pThis->GetClientVersion(ClientId) < VERSION_DDNET_REDIRECT)
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "redirect failed: client does not support redirects");
++		return;
++	}
++
++	pThis->RedirectClient(ClientId, Port);
++	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "redirect sent");
++}
++
++void CServer::ConRedirectGrant(IConsole::IResult *pResult, void *pUser)
++{
++	CServer *pThis = static_cast<CServer *>(pUser);
++	if(pResult->m_ClientId != IConsole::CLIENT_ID_UNSPECIFIED)
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "redirect grant failed: local console only");
++		return;
++	}
++	NETADDR Address;
++	if(net_addr_from_str(&Address, pResult->GetString(0)) != 0)
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "redirect grant failed: invalid address");
++		return;
++	}
++
++	const int LifetimeMs = pResult->GetInteger(1);
++	if(LifetimeMs < 100 || LifetimeMs > 10000)
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "redirect grant failed: lifetime must be between 100 and 10000 ms");
++		return;
++	}
++
++	const int64_t Now = time_get();
++	const int64_t ExpiresAt = Now + (time_freq() * LifetimeMs) / 1000;
++	if(!pThis->m_RedirectAdmission.Add(Address, ExpiresAt, Now))
++	{
++		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "redirect grant failed: admission table is full");
++		return;
++	}
++
++	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", "redirect grant added");
++}
++
+ void CServer::ConStatus(IConsole::IResult *pResult, void *pUser)
+ {
+ 	char aBuf[1024];
+@@ -4523,6 +4586,8 @@ void CServer::RegisterCommands()
+ 
+ 	// register console commands
+ 	Console()->Register("kick", "i[id] ?r[reason]", CFGFLAG_SERVER, ConKick, this, "Kick player with specified id for any reason");
++	Console()->Register("redirect", "i[id] i[port]", CFGFLAG_SERVER, ConRedirect, this, "Redirect player to another port on this server address");
++	Console()->Register("redirect_grant", "s[address] i[lifetime_ms]", CFGFLAG_SERVER, ConRedirectGrant, this, "Allow one connection from an address to bypass the server password");
+ 	Console()->Register("status", "?r[name]", CFGFLAG_SERVER, ConStatus, this, "List players containing name or all players");
+ 	Console()->Register("shutdown", "?r[reason]", CFGFLAG_SERVER, ConShutdown, this, "Shut down");
+ 	Console()->Register("logout", "", CFGFLAG_SERVER, ConLogout, this, "Logout of rcon");
+diff --git a/src/engine/server/server.h b/src/engine/server/server.h
+--- a/src/engine/server/server.h
++++ b/src/engine/server/server.h
+@@ -6,6 +6,7 @@
+ #include "antibot.h"
+ #include "authmanager.h"
+ #include "name_ban.h"
++#include "redirect_admission.h"
+ #include "snap_id_pool.h"
+ 
+ #include <base/hash.h>
+@@ -224,6 +225,7 @@ class CServer : public IServer
+ 	CEcon m_Econ;
+ 	CFifo m_Fifo;
+ 	CServerBan m_ServerBan;
++	CRedirectAdmission m_RedirectAdmission;
+ 
+ 	int64_t m_GameStartTime;
+ 
+@@ -435,6 +437,8 @@ public:
+ 	int Run();
+ 
+ 	static void ConKick(IConsole::IResult *pResult, void *pUser);
++	static void ConRedirect(IConsole::IResult *pResult, void *pUser);
++	static void ConRedirectGrant(IConsole::IResult *pResult, void *pUser);
+ 	static void ConStatus(IConsole::IResult *pResult, void *pUser);
+ 	static void ConShutdown(IConsole::IResult *pResult, void *pUser);
+ 	static void ConRecord(IConsole::IResult *pResult, void *pUser);
+diff --git a/src/test/server_test.cpp b/src/test/server_test.cpp
+--- a/src/test/server_test.cpp
++++ b/src/test/server_test.cpp
+@@ -1,4 +1,5 @@
+ #include <engine/server/server.h>
++#include <engine/server/redirect_admission.h>
+ 
+ #include <gtest/gtest.h>
+ 
+@@ -59,3 +60,32 @@ TEST(Server, StrHideIps)
+ 	EXPECT_STREQ(aLine, "<{<{a}>}>");
+ 	EXPECT_STREQ(aLineWithoutIps, "XXX}>}>");
+ }
++
++TEST(Server, RedirectAdmissionIsSingleUseAndIgnoresPort)
++{
++	CRedirectAdmission Admission;
++	NETADDR Granted;
++	NETADDR Arriving;
++	ASSERT_EQ(net_addr_from_str(&Granted, "192.0.2.4:40000"), 0);
++	ASSERT_EQ(net_addr_from_str(&Arriving, "192.0.2.4:50000"), 0);
++
++	ASSERT_TRUE(Admission.Add(Granted, 200, 100));
++	EXPECT_EQ(Admission.Size(100), 1U);
++	EXPECT_TRUE(Admission.Consume(Arriving, 150));
++	EXPECT_FALSE(Admission.Consume(Arriving, 150));
++}
++
++TEST(Server, RedirectAdmissionExpiresAndKeepsDistinctGrants)
++{
++	CRedirectAdmission Admission;
++	NETADDR First;
++	NETADDR Second;
++	ASSERT_EQ(net_addr_from_str(&First, "192.0.2.4:40000"), 0);
++	ASSERT_EQ(net_addr_from_str(&Second, "[2001:db8::4]"), 0);
++
++	ASSERT_TRUE(Admission.Add(First, 150, 100));
++	ASSERT_TRUE(Admission.Add(Second, 300, 100));
++	EXPECT_FALSE(Admission.Consume(First, 150));
++	EXPECT_TRUE(Admission.Consume(Second, 150));
++	EXPECT_EQ(Admission.Size(150), 0U);
++}
