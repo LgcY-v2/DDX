@@ -10,7 +10,12 @@ CONSOLE_LOG="$SERVER_DIR/logs/console.log"
 UNIT="$DDX_TARGET_UNIT"
 PORT="$DDX_TARGET_PORT"
 
-install -d -m 700 "$SERVER_DIR/logs" "$SERVER_DIR/run" "$SERVER_DIR/state"
+for runtime_directory in "$SERVER_DIR/logs" "$SERVER_DIR/run" "$SERVER_DIR/state"; do
+	if [[ ! -d "$runtime_directory" || -L "$runtime_directory" ]]; then
+		echo "DDNet runtime directory is unavailable: $runtime_directory" >&2
+		exit 1
+	fi
+done
 
 if [[ ! -x "$BINARY" ]]; then
 	echo "DDNet server binary is missing: $BINARY" >&2
