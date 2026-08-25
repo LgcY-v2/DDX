@@ -1,50 +1,54 @@
-# DDX historical map compatibility contract
+# DDX historical map compatibility research contract
 
-This is the reviewed boundary between the passive research corpus and DDX
-runtime behavior. A repository or map appearing in the corpus never enables
-code automatically. Only the numbered DDX patch stack is executable.
+This records recovered source semantics and the boundary between the passive
+research corpus and DDX runtime behavior. A repository, map, or table appearing
+here never enables code automatically. Only independently accepted behavior in
+the numbered DDX patch stack is executable.
+
+Production acceptance covers only the legacy teleport behavior and exact-map
+race primitives described below. The extra entity-tile tables remain research
+evidence and are not a supported feature contract. See
+[`../../docs/LEGACY_MAP_COMPATIBILITY.md`](../../docs/LEGACY_MAP_COMPATIBILITY.md).
 
 ## Selection and failure behavior
 
-- `sv_ddx_compat_family 0` disables historical game/front tile semantics.
-- Family `1` is canonical XXLDDRace 2.0.
-- Family `2` is TBlock's conflicting raw tile layout.
-- Family `3` is the ftk XXLDDRace extension, including its per-character tune
-  and rescue-control tiles.
-- Family `4` is the verified Teeworlds 0.5/AiP hybrid layout: legacy base and
-  paired-teleport game tiles below `176`, plus canonical XXL extras.
-- `sv_ddx_tele_family 0` disables combined input/output teleport semantics.
+- `sv_ddx_tele_family 0` keeps modern DDNet teleport semantics.
 - Tele family `1` is the fokkonaut/xuilan `93` normal, `94` evil encoding.
 - Tele family `2` is the nameless/uvi `95` normal, `94` evil encoding.
-- Unknown selector values fail closed. Map loading logs unsupported
-  historical-looking IDs and the effective configured family.
-- No automatic inference reinterprets raw `190/191`, which modern DDNet uses
-  for entity-overlay markers, or the conflicting TBlock/ftk ranges.
+- Tele family `3` is the recovered XXL standard normal, evil, and checkpoint
+  behavior.
+- Unknown selector values fail closed to modern teleports. Map loading logs the
+  effective profile once.
+- No automatic inference reinterprets modern or conflicting raw ranges.
 
 ## Teeworlds 0.5 AiP hybrid layout
 
-DDX selects family `4` automatically only when the map has size 107225 and
+The automatic game-layer profile is limited to a map with size 107225 and
 SHA-256
 `8f4a614b00f319694d877e3ee24ee3bd59cbe549a8eab2670db9ec0504a60ccf`.
 The map is loaded as
 `Aip_Race_extreme_by_Qwer534--8f4a614b00f319694d877e3ee24ee3bd59cbe549a8eab2670db9ec0504a60ccf`.
 
-- IDs `5–8` are the original low-strength directional boosters.
+- IDs `5`, `6`, and `8` are the low-strength boosters present in the map.
 - IDs `9` and `11` retain freeze and unfreeze behavior.
-- ID `10` is the original kick zone.
 - IDs `12–15` are the original high-strength directional boosters.
-- IDs `21–24` apply the low-strength boost and freeze together.
-- Odd IDs `35–175` are teleport outputs and even IDs `36–174` are their
+- IDs `21–23` are the freeze boosters present in the map.
+- Odd IDs `35–189` are teleport outputs and even IDs `36–190` are their
   paired inputs. Entering an input preserves velocity and weapons and retracts
-  the tee's hook, matching the recovered 0.5 source.
-- IDs `176–191` use the canonical XXL table below.
+  the tee's own hook.
+- The source-defined down boost `7`, kick `10`, and freeze-up boost `24` are
+  absent and inactive.
 
-All other maps default this game-scoped selector to zero. Operators may select
-family `4` explicitly only after identifying the map's source family. DDX does
-not infer this family from tile values because the raw ranges conflict with
-modern DDRace checkpoints, stoppers, and control tiles.
+The map-owned profile is rebuilt on every successful load and never mutates
+the configured selector. Every other map keeps modern game-layer meanings.
+DDX does not infer a family from tile values because the raw ranges conflict
+with modern DDRace checkpoints, stoppers, and control tiles.
 
-## Canonical XXLDDRace and ftk layout
+## Recovered canonical XXLDDRace and ftk inventory
+
+This table records one recovered canonical XXL ID layout. The exact 0.5 map
+profile above assigns different paired-teleport meanings to IDs `176–190`.
+The table is not a list of supported DDX features.
 
 | Raw ID | Behavior |
 | ---: | --- |
@@ -62,7 +66,7 @@ modern DDRace checkpoints, stoppers, and control tiles.
 | 190 | Add one jump, bounded to the network field. |
 | 191 | Remove one jump, bounded at zero. |
 
-Family `3` additionally implements the source-exact ftk raw values for:
+The recovered ftk source also assigns these raw values:
 
 - `0x80–0x87`: air-jump impulse;
 - `0x88–0x8a`: laser reach;
@@ -78,23 +82,23 @@ Family `3` additionally implements the source-exact ftk raw values for:
 - `0xae/0xaf`: player hooking;
 - `0xba/0xbb`: enable/disable rescue for that character.
 
-Tune changes are owned per character, sent to that client, and do not mutate
-global or zone tuning.
+Any future tune behavior requires its own current DDX ownership and mapping
+contract. The recovered path remains deferred with the extra entity-tile work.
 
-## TBlock layout
+## Recovered TBlock layout
 
-Family `2` implements raw IDs `164`, `166–168`, and `176–189` according to the
-archived TBlock source. Its raw IDs conflict with canonical XXLDDRace. Old
-clan, skin, and member-string gates are deliberately mapped to current DDX
-helper/mod/admin authority because those strings are client-controlled.
+The archived TBlock source assigns raw IDs `164`, `166–168`, and `176–189`.
+Those IDs conflict with canonical XXLDDRace. Old clan, skin, and member-string
+gates are not a safe DDX authorization mechanism because those strings are
+client-controlled.
 
 ## Teleports
 
 Canonical XXL maps use standard tele types `10`, `26`, `27`, and `29–31`.
-With a historical game family selected, DDX retains the source behavior for
-normal, evil, and checkpoint teleports: normal and checkpoint teleports keep
-velocity and weapons and retract the tee's own hook; evil teleports zero
-velocity and release hooks; super bypasses evil but not canonical normal or
+With `sv_ddx_tele_family 3`, DDX retains the source behavior for normal, evil,
+and checkpoint teleports: normal and checkpoint teleports keep velocity and
+weapons and retract the tee's own hook; evil teleports zero velocity, preserve
+weapons, and release hooks; super bypasses evil but not canonical normal or
 checkpoint teleports.
 
 F-DDrace combined input/output tiles are registered as both an input and an
@@ -102,19 +106,21 @@ output. Selection excludes the tile currently occupied, a single-tile set is
 a no-op, and per-character entry state prevents immediate loops until the tee
 leaves the combined teleporter.
 
-## Security and ownership
+## Security and ownership requirements
 
 - Historical credential files, password hashes, numeric auth ranks, and
   client-supplied clan/skin trust are not imported.
-- State belongs to a player or character and is cleared/restored at explicit
-  lifecycle boundaries. Ordinary super transitions supersede tile ownership.
-- The feature is off by default, so modern maps keep their existing meanings.
+- Accepted compatibility state belongs to one map profile or character and is
+  rebuilt or cleared at explicit lifecycle boundaries.
+- Compatibility is off by default, so modern maps keep their existing
+  meanings.
 - Research repositories, archives, maps, and generated reports are passive
   inputs and are not runtime dependencies.
 
 ## Deliberately research-only
 
-Candidate account economies, shops, city/minigame systems, bots, cheats,
-obsolete clients, old SQL/authentication implementations, and community
-policy remain documented in each `xfeatures.md`. They are not needed to make
-XXL maps playable and require separate product decisions before any port.
+The entity-tile tables above, candidate account economies, shops,
+city/minigame systems, bots, cheats, obsolete clients, old SQL/authentication
+implementations, and community policy remain documented research. Every
+future DDX feature requires a separate product decision and a complete native
+contract before it enters the supported patch stack.

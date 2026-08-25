@@ -1,9 +1,9 @@
 # XXLDDRace compatibility corpus
 
-This directory records the source and map research used to make DDX a
-compatible successor to historical XXLDDRace servers. Raw repositories and
-downloads are local research inputs, not build inputs and not live runtime
-dependencies.
+This directory records historical XXLDDRace source and map research used to
+identify old encodings and evaluate possible DDX features. It is not a promise
+of general XXLDDRace compatibility. Raw repositories and downloads are local
+research inputs, not build inputs and not live runtime dependencies.
 
 Ownership is deliberately one-way:
 
@@ -53,10 +53,9 @@ Current corpus checkpoint:
 - the AiP-Race author's 2010 release page is retained beside a feature report
   for the exact later archive map: the page calls the original map DDRace,
   while the later hash demonstrably carries canonical XXL-family raw IDs;
-- the exact AiP extreme hash currently used for acceptance combines the
-  recovered Teeworlds 0.5 paired game-layer teleport encoding below ID 176
-  with canonical XXL extras at IDs 176–190; it therefore has an explicit,
-  map-scoped family instead of a value-based guess;
+- the exact AiP extreme hash used for teleport acceptance carries the recovered
+  Teeworlds 0.5 paired game-layer encoding through ID 190; IDs 176–190 on this
+  profile are paired teleports, not canonical XXL entity tiles;
 - the local download/repository sample contains 991 observed map files, 584
   unique hashes, and 114 unique maps using raw IDs 176–191;
 - the authoritative 7.26 GB historical archive remains single-copy under the
@@ -66,6 +65,6 @@ Current corpus checkpoint:
 - `historical-map-features.md` lists all 5,015 maps carrying IDs 176–189 and
   records the complete-scan digest and family-assignment cautions.
 
-The reviewed server compatibility contract is in `compatibility-contract.md`.
-It records the implemented raw IDs, explicit family selectors, security
-substitutions, and behavior that remains research-only.
+The reviewed research contract is in `compatibility-contract.md`. It separates
+the accepted legacy teleport boundary from recovered entity-tile definitions
+that remain research-only.

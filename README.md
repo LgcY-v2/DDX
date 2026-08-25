@@ -1,20 +1,32 @@
 # DDX
 
-Canonical DDNet 19.9 gameplay source for DDX deployments. Each live server
-keeps its own binary, configuration, state, logs, FIFO, and secrets; no live
-service executes this mutable source or build tree.
+Canonical DDNet 19.9 server source for DDX. The source repository contains the
+complete DDX capability set; each deployment enables only the features it
+needs and keeps its own binary, configuration, state, logs, FIFO, and secrets.
+No live service executes this mutable source or build tree.
 
-Current additions:
+## DDX additions to DDNet 19.9
 
-- owner RCON above admin;
-- server-side map browser for DDRace, Gores, and the historical archive;
-- random votes for map groups and archive search collections;
-- `aip` rapid fire;
-- owner-controlled grenade bounces;
-- target arguments for `super` and `unsuper`.
-- explicit compatibility modes for historical XXLDDRace, TBlock, ftk tune
-  tiles, Teeworlds 0.5 AiP/XXL hybrid maps, and both known F-DDrace
-  combined-teleport encodings.
+The numbered patch stack is the authority for this inventory:
+
+- the `DDX` gametype name;
+- an owner RCON role above admin, including owner-only commands and test-command
+  access while `sv_test_cmds` remains disabled for lower roles;
+- target arguments for `super` and `unsuper` with rank-aware authorization;
+- `aip` rapid fire with an owner-selected delay and persistent player setting;
+- owner-controlled grenade bounces for future projectiles;
+- bounded, one-use admission grants for same-address DDNet player handoffs;
+- a server-side map browser for DDRace, Gores, and the historical archive;
+- archive search collections, random map choices, verified extraction, bounded
+  caching, and a map-load cooldown;
+- source-proven compatibility for legacy teleport encodings needed to test old
+  maps, including the verified Teeworlds 0.5 paired game-layer encoding and the
+  two known F-DDrace combined input/output encodings, plus recovered XXL
+  normal, evil, and checkpoint teleport semantics.
+
+Archive browsing and historical compatibility are optional server features.
+For example, the fixed AiP-Race deployment disables map voting and archive
+access while using the same DDX executable.
 
 Maps under `/srv/multi_tas/data/maps` are shared read-only. DDX does not keep a
 second copy. Historical maps are extracted on demand into a bounded local
@@ -39,35 +51,41 @@ numbered patches. `build/source-map-voting` is generated.
 
 ## Historical map compatibility
 
-Historical raw tile IDs conflict across mods and with modern DDNet. DDX never
-guesses. Select the source-proven family in the server or embedded map
-configuration:
+DDX supports legacy teleport adapters so old candidate maps can remain
+playable with a stock DDNet client. Historical raw IDs conflict across mods and
+with modern DDNet, so compatibility is selected from source evidence or an
+exact map identity; raw tile values alone are never enough.
+
+The supported compatibility boundary is:
 
 ```text
-sv_ddx_compat_family 1  # canonical XXLDDRace
-sv_ddx_compat_family 2  # TBlock
-sv_ddx_compat_family 3  # ftk XXLDDRace tune/rescue extension
-sv_ddx_compat_family 4  # Teeworlds 0.5 game tiles with XXL extras
-
 sv_ddx_tele_family 1    # F-DDrace combined input/output types 93/94
 sv_ddx_tele_family 2    # F-DDrace combined input/output types 95/94
+sv_ddx_tele_family 3    # XXL normal, evil, and checkpoint teleport semantics
 ```
 
-Zero disables each compatibility family. The map-load log reports legacy IDs
-that would otherwise be ignored and records the effective selection. Canonical
-XXL behavior covers raw game/front tiles `176–185` and `189–191`; ftk also
-covers its per-character tune tiles and rescue override; TBlock keeps its
-conflicting assignments separate. Historical clan/skin/member gates use
-current helper/mod/admin RCON authority rather than trusting client strings or
-importing obsolete password storage.
-
-Family `4` is intentionally map-scoped. It restores the Teeworlds 0.5
-directional boosters, freeze-boosters, kick tile, and paired game-layer
-teleporters while retaining canonical XXL IDs `176–191`. The server selects
-this family automatically only for the verified size and full SHA-256 of the
+Zero keeps modern DDNet teleport semantics. Any other value is rejected and
+also uses modern semantics; the server records the rejected selector once at
+map load. The verified
 `Aip_Race_extreme_by_Qwer534--8f4a614b00f319694d877e3ee24ee3bd59cbe549a8eab2670db9ec0504a60ccf`
-map. Every other map defaults to family zero and retains modern DDRace tile
-meanings unless an identified source family is selected explicitly.
+map also uses its Teeworlds 0.5 paired game-layer teleport encoding. The server
+selects that profile from the map's full SHA-256 and size; the filename is not
+part of the identity. The profile is rebuilt for every map and cannot alter
+the configured selector or any map loaded before or after it.
+
+Historical rainbow, super, AiP/XXL rapid-fire, admin/member, heavy-hammer,
+invisibility, blood, clear-state, remove-ninja, and jump-control entity tiles
+are not part of the supported DDX runtime contract. Their recovered definitions
+remain research evidence for possible features. DDX will add selected features
+one at a time with their own server behavior, tests, mapping contract, and,
+when necessary, client/editor support.
+
+The implemented compatibility boundary is documented in
+[`docs/LEGACY_MAP_COMPATIBILITY.md`](docs/LEGACY_MAP_COMPATIBILITY.md). The
+capability ownership matrix is in
+[`docs/DDX_FEATURE_MATRIX.md`](docs/DDX_FEATURE_MATRIX.md). The cleanup and
+deployment contract is retained in
+[`docs/goals/CLEAN_DDX_FOUNDATION.md`](docs/goals/CLEAN_DDX_FOUNDATION.md).
 
 Research provenance, raw source inventories, map scans, family conflicts, and
 per-candidate `xfeatures.md` reports are under `archive/xxlddrace/`.
