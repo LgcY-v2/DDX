@@ -1,7 +1,8 @@
 # DDX
 
-Private DDNet 19.9 server mod used for testing. The server is `DDX | Testing`
-on UDP 8305. It still uses the normal DDRace controller.
+Canonical DDNet 19.9 gameplay source for DDX deployments. Each live server
+keeps its own binary, configuration, state, logs, FIFO, and secrets; no live
+service executes this mutable source or build tree.
 
 Current additions:
 
@@ -11,6 +12,8 @@ Current additions:
 - `aip` rapid fire;
 - owner-controlled grenade bounces;
 - target arguments for `super` and `unsuper`.
+- explicit compatibility modes for historical XXLDDRace, TBlock, ftk tune
+  tiles, and both known F-DDrace combined-teleport encodings.
 
 Maps under `/srv/multi_tas/data/maps` are shared read-only. DDX does not keep a
 second copy. Historical maps are extracted on demand into a bounded local
@@ -20,15 +23,44 @@ cache.
 
 ```bash
 ./scripts/build-server.sh
-./scripts/install-server.sh
-./scripts/restart-server.sh
+./scripts/install-server.sh ddx-testing ddx-aip-race
+./scripts/restart-server.sh ddx-testing
+./scripts/restart-server.sh ddx-aip-race
 ```
 
 Building does not replace the running binary. Install and restart are separate
-on purpose.
+on purpose. Targets are explicit so a build cannot silently change or restart
+an unrelated service. Installation atomically copies the same verified build
+into each deployment's private executable path.
 
 Source is the pinned DDNet 19.9 tree in `source/ddnet`. DDX changes live in the
 numbered patches. `build/source-map-voting` is generated.
+
+## Historical map compatibility
+
+Historical raw tile IDs conflict across mods and with modern DDNet. DDX never
+guesses. Select the source-proven family in the server or embedded map
+configuration:
+
+```text
+sv_ddx_compat_family 1  # canonical XXLDDRace
+sv_ddx_compat_family 2  # TBlock
+sv_ddx_compat_family 3  # ftk XXLDDRace tune/rescue extension
+
+sv_ddx_tele_family 1    # F-DDrace combined input/output types 93/94
+sv_ddx_tele_family 2    # F-DDrace combined input/output types 95/94
+```
+
+Zero disables each compatibility family. The map-load log reports legacy IDs
+that would otherwise be ignored and records the effective selection. Canonical
+XXL behavior covers raw game/front tiles `176–185` and `189–191`; ftk also
+covers its per-character tune tiles and rescue override; TBlock keeps its
+conflicting assignments separate. Historical clan/skin/member gates use
+current helper/mod/admin RCON authority rather than trusting client strings or
+importing obsolete password storage.
+
+Research provenance, raw source inventories, map scans, family conflicts, and
+per-candidate `xfeatures.md` reports are under `archive/xxlddrace/`.
 
 ## RCON
 
@@ -76,4 +108,5 @@ Archive notes and checksums are in `archive/README.md`. The preparation script
 is `scripts/prepare-map-archive.py`.
 
 The service helpers are `status-server.sh`, `start-server.sh`,
-`stop-server.sh`, and `restart-server.sh` under `scripts/`.
+`stop-server.sh`, and `restart-server.sh` under `scripts/`; each requires
+`ddx-testing` or `ddx-aip-race`.

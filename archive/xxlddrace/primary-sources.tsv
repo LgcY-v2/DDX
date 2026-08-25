@@ -1,0 +1,17 @@
+status	published_url	capture_url	evidence
+verified	http://xxl-clan.com/showthread.php?tid=17	https://web.archive.org/web/20160731064338id_/http://xxl-clan.com/showthread.php?tid=17	first-party download matrix for XXLDDRace 2.0 and older releases; attachment bodies were not archived
+verified	http://xxl-clan.com/showthread.php?tid=30	https://web.archive.org/web/20160731065146id_/http://xxl-clan.com/showthread.php?tid=30	first-party changelog from version 1.0 through 2.0
+verified	http://xxl-clan.com/showthread.php?tid=119	https://web.archive.org/web/20160731012904id_/http://xxl-clan.com/showthread.php?tid=119	first-party Teeworlds 0.6.1 port announcement
+verified	http://xxl-clan.com/showthread.php?tid=123	https://web.archive.org/web/20160731005459id_/http://xxl-clan.com/showthread.php?tid=123	first-party XXLDDRace 1.8 beta announcement and source branch link
+verified	http://xxl-clan.com/showthread.php?tid=188	https://web.archive.org/web/20160731064457id_/http://xxl-clan.com/showthread.php?tid=188	first-party support answer linking the canonical source repository and documenting the 64-player variant
+verified	http://xxl-clan.com/showthread.php?tid=205	https://web.archive.org/web/20160731065415id_/http://xxl-clan.com/showthread.php?tid=205	first-party XXLDDRace 2.0 release announcement
+index-only	http://xxl-clan.com/showthread.php?tid=132	-	forum index names Explanation XXL Entities; no page capture was located
+unavailable	http://xxl-clan.com/attachment.php?aid=4	-	XXLDDRace 2.0 Windows attachment; no CDX capture
+unavailable	http://xxl-clan.com/attachment.php?aid=5	-	XXLDDRace 2.0 Linux attachment; no CDX capture
+unavailable	http://xxl-clan.com/attachment.php?aid=6	-	XXLDDRace 2.0 Linux attachment; no CDX capture
+unavailable	http://xxl-clan.com/attachment.php?aid=7	-	XXLDDRace 1.5a Windows attachment; no CDX capture
+unavailable	http://xxl-clan.com/attachment.php?aid=8	-	XXLDDRace 1.5a Linux attachment; no CDX capture
+unavailable	http://xxl-clan.com/attachment.php?aid=9	-	XXLDDRace 1.5a Linux attachment; no CDX capture
+verified	https://www.teeworlds.com/forum/viewtopic.php?id=9552	-	xXxDdRaCe author states that the mod is derived from XXLDDRace, adds a language filter, and accelerates XXL behavior; linked final archive is unavailable
+verified	https://teeworlds-friends.heinrich5991.de/Forum/index.php?page=Thread&threadID=3296	-	2011 support thread attaches two DDRace test bundles and identifies their server as xxltomate's then-current DDRace trunk; both attachment bodies are now unavailable
+verified	https://www.teeworlds.com/forum/viewtopic.php?id=5969	-	AiP-Race author's 2010 release page identifies the original official map as DDRace, describes 18 stages and its admin room, and links now-defunct mirrors; it does not establish that the later archived map hash is byte-identical

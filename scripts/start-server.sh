@@ -2,16 +2,18 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SERVER_DIR="$ROOT_DIR/server"
-BINARY="$ROOT_DIR/build/ddnet/DDNet-Server"
+. "$ROOT_DIR/scripts/server-targets.sh"
+ddx_select_target "${1:-}"
+SERVER_DIR="$DDX_TARGET_ROOT/server"
+BINARY="$DDX_TARGET_ROOT/build/ddnet/DDNet-Server"
 CONSOLE_LOG="$SERVER_DIR/logs/console.log"
-UNIT="tee-world-candidate-testing-ddnet.service"
-PORT=8305
+UNIT="$DDX_TARGET_UNIT"
+PORT="$DDX_TARGET_PORT"
 
 install -d -m 700 "$SERVER_DIR/logs" "$SERVER_DIR/run" "$SERVER_DIR/state"
 
 if [[ ! -x "$BINARY" ]]; then
-	echo "DDNet server binary is missing; run scripts/build-server.sh and scripts/install-server.sh first." >&2
+	echo "DDNet server binary is missing: $BINARY" >&2
 	exit 1
 fi
 

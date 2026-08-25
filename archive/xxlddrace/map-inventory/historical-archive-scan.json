@@ -1,0 +1,13 @@
+{
+  "archive_members": 61075,
+  "archive_sha256": "e8c0f3c9b2d13664def818794680a3e411f358927fdbe00d8fb33a4c1b0c8961",
+  "archive_size": 7265074525,
+  "archive_unique_hashes": 53400,
+  "candidate_records": 13628,
+  "complete_scan_sha256": "ecf4a07224b4d81a94ad45cbb12b7621330d65601c0190cbf04c7b32c03b0f8f",
+  "delta_maps": 4,
+  "parse_failures": 207,
+  "peak_temporary_batch_bytes": 2055681018,
+  "scanned_unique_hashes": 53404,
+  "schema": 1
+}

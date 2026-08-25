@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-UNIT="tee-world-candidate-testing-ddnet.service"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT_DIR/scripts/server-targets.sh"
+ddx_select_target "${1:-}"
+UNIT="$DDX_TARGET_UNIT"
 
 if ! systemctl --user is-active --quiet "$UNIT"; then
 	STATE="$(systemctl --user is-active "$UNIT" 2>/dev/null || true)"

@@ -1,0 +1,14 @@
+status	kind	published_url	local_path	size	sha256
+downloaded	source archive	https://www.mediafire.com/file/rimx251wxxwisla/TBlock.zip/file	downloads/teeworlds-forum/tblock-v1.2/TBlock.zip	40872731	7ab0661daffcf3e96f9e570f391842ed6f5004b4d8a3bdd88720d7f33b008f87
+downloaded	map archive	https://www.mediafire.com/file/l2uyrw0jz32rdgj/maps-TBlock.zip/file	downloads/teeworlds-forum/tblock-v1.2/maps-TBlock.zip	757899	0709e004f71594eba1626f8a624a8b33bdf39e9a1c42cc47b94b8e290ed01a9b
+downloaded	sample config	https://www.mediafire.com/file/z7ba84fz2edbj1a/autoexec.cfg/file	downloads/teeworlds-forum/tblock-v1.2/autoexec.cfg	2722	bde5a4f3610b925167db6046243f9ede7d64680480e931afe65ef62f0a8664f7
+extracted	map from map archive	https://www.mediafire.com/file/l2uyrw0jz32rdgj/maps-TBlock.zip/file	downloads/teeworlds-forum/tblock-v1.2/maps/Great_Royal_v20_n.map	808521	2c0a40e5f0769f00fa50965e3514bd3109b68aa8b1945e4d1b1c298219f75de4
+unavailable	xXxDdRaCe final archive	https://dl.dropbox.com/u/96986228/xXxDdRaCe%201.0.zip	-	-	-
+unavailable	xxltomate DDRace support bundle	https://teeworlds-friends.heinrich5991.de/Forum/index.php?page=Attachment&attachmentID=2160&h=d4d9eadd1be6e133fc1c6a5705cc8fbf84841213	-	-	-
+unavailable	xxltomate DDRace support bundle variant	https://teeworlds-friends.heinrich5991.de/Forum/index.php?page=Attachment&attachmentID=2161&h=67531986b985aa27c891f95edfe796be94d35ee3	-	-	-
+downloaded	TDDRace map archive	https://tw-mod.ucoz.com/maps.rar	downloads/teeworlds-forum/tddrace/maps.rar	10347115	2b183282f350886bca7f28918e4891ae283feda8ee71a2c0465dbfea9f64da14
+downloaded	TDDRace binary release	https://tw-mod.ucoz.com/_fr/0/DDrace_by_TIGRO.rar	downloads/teeworlds-forum/tddrace/DDrace_by_TIGRO.rar	428879	68a0e3541d4d8b9159a5898e77a1c0e7f151f024673d5b1b8a37f3870672d6d2
+extracted	TDDRace Windows server	https://tw-mod.ucoz.com/_fr/0/DDrace_by_TIGRO.rar	downloads/teeworlds-forum/tddrace/binary-release/teeworlds_srv.exe	565760	229944b695049f3702cc53b0d4d83a5e050a54797a211479297836f16cea5dd9
+extracted	TDDRace bundled map	https://tw-mod.ucoz.com/_fr/0/DDrace_by_TIGRO.rar	downloads/teeworlds-forum/tddrace/binary-release/data/maps/1exper.map	239724	9017815f570f731169d1093e23115de6e84a7ebd52e9510429863db6febe3f7d
+downloaded	protected +DDRace/XXL-family map	https://downloads.teeworlds.com/solidfiles.com/4d5603ab22/blmapPepe_d9a5e74d.map	downloads/teeworlds-forum/blmappepe/blmapPepe_d9a5e74d.map	259201	9122319e575612bcebde1864f92f7741e1c3652767e6ee9a18d3f834afc4ad7b
+downloaded	protected +DDRace/XXL-family map	https://downloads.teeworlds.com/solidfiles.com/8839ceef72/blmapPepe_dc773a53.map	downloads/teeworlds-forum/blmappepe/blmapPepe_dc773a53.map	128493	4b551fb8ab3bdde87f0b7a9999f9a3179b29fe8811a34a8cc458915468b8c033

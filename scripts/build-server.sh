@@ -14,6 +14,7 @@ PATCH_FILES=(
 	"$ROOT_DIR/patches/0008-chore-tidy-server-sources.patch"
 	"$ROOT_DIR/patches/0009-feat-add-grenade-bounces.patch"
 	"$ROOT_DIR/patches/0010-feat-add-player-handoffs.patch"
+	"$ROOT_DIR/patches/0011-feat-add-historical-map-compatibility.patch"
 )
 PATCHED_SOURCE="$ROOT_DIR/build/source-map-voting"
 PATCHED_BUILD="$ROOT_DIR/build/ddnet-map-voting"
