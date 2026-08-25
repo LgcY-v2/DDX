@@ -9,6 +9,7 @@ Current additions:
 - server-side map browser for DDRace, Gores, and the historical archive;
 - random votes for map groups and archive search collections;
 - `aip` rapid fire;
+- owner-controlled grenade bounces;
 - target arguments for `super` and `unsuper`.
 
 Maps under `/srv/multi_tas/data/maps` are shared read-only. DDX does not keep a
@@ -50,6 +51,20 @@ aip 100 3
 
 The delay is milliseconds and rounds to the nearest 20 ms server tick. Bare `aip`
 toggles the fastest setting. AIP state survives map changes.
+
+Grenade bounce examples:
+
+```text
+grenade_bounces 1
+grenade_bounces 3 1
+grenade_bounces 0
+```
+
+The first argument is the number of extra solid-tile bounces; the optional
+second argument is a client ID. Grenades fired with a positive value do not
+expire in flight or explode on those extra bounces. Player hits and the first
+solid collision after the extra bounces still explode normally. The setting
+applies to future shots and survives map changes.
 
 ## Archive
 

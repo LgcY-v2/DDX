@@ -1,0 +1,341 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0fac89a..279570a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2944,6 +2944,7 @@ if(SERVER)
+     # tidy-alphabetical-start
+     ddracechat.cpp
+     ddracecommands.cpp
++    ddx_grenade_bounce.h
+     ddx_rapid_fire.h
+     entities/character.cpp
+     entities/character.h
+@@ -3236,6 +3237,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
+     datafile_test.cpp
+     dbg_test.cpp
+     ddx_auth_test.cpp
++    ddx_grenade_bounce_test.cpp
+     ddx_rapid_fire_test.cpp
+     editor_test.cpp
+     fs_test.cpp
+diff --git a/src/game/server/ddx_grenade_bounce.h b/src/game/server/ddx_grenade_bounce.h
+new file mode 100644
+index 0000000..5767717
+--- /dev/null
++++ b/src/game/server/ddx_grenade_bounce.h
+@@ -0,0 +1,47 @@
++#ifndef GAME_SERVER_DDX_GRENADE_BOUNCE_H
++#define GAME_SERVER_DDX_GRENADE_BOUNCE_H
++
++#include <base/vmath.h>
++
++namespace DdxGrenadeBounce
++{
++constexpr int DISABLED = -1;
++
++constexpr int InitialRemaining(int Bounces)
++{
++	return Bounces > 0 ? Bounces : DISABLED;
++}
++
++constexpr bool UsesVanillaLifetime(int Remaining)
++{
++	// Zero means the extra bounces are spent, but the grenade still waits for its final impact.
++	return Remaining == DISABLED;
++}
++
++constexpr bool CanBounce(int Remaining)
++{
++	return Remaining > 0;
++}
++
++constexpr int AfterBounce(int Remaining)
++{
++	return Remaining - 1;
++}
++
++inline vec2 BounceDirection(vec2 Direction, float Curvature, float Speed, float Time, bool HitX, bool HitY)
++{
++	Direction.y += 2.0f * Curvature * Speed * Time / 10000.0f;
++	if(!HitX && !HitY)
++	{
++		HitX = true;
++		HitY = true;
++	}
++	if(HitX)
++		Direction.x = -Direction.x;
++	if(HitY)
++		Direction.y = -Direction.y;
++	return normalize(Direction);
++}
++} // namespace DdxGrenadeBounce
++
++#endif // GAME_SERVER_DDX_GRENADE_BOUNCE_H
+diff --git a/src/game/server/entities/character.cpp b/src/game/server/entities/character.cpp
+index 51ee292..8d16d02 100644
+--- a/src/game/server/entities/character.cpp
++++ b/src/game/server/entities/character.cpp
+@@ -614,7 +614,10 @@ void CCharacter::FireWeapon()
+ 			false, //Freeze
+ 			true, //Explosive
+ 			SOUND_GRENADE_EXPLODE, //SoundImpact
+-			MouseTarget // MouseTarget
++			MouseTarget, // MouseTarget
++			0, //Layer
++			0, //Number
++			m_pPlayer->m_GrenadeBounces //OwnerGrenadeBounces
+ 		);
+ 
+ 		GameServer()->CreateSound(m_Pos, SOUND_GRENADE_FIRE, TeamMask()); // NOLINT(clang-analyzer-unix.Malloc)
+diff --git a/src/game/server/entities/projectile.cpp b/src/game/server/entities/projectile.cpp
+index 7c365ee..3186480 100644
+--- a/src/game/server/entities/projectile.cpp
++++ b/src/game/server/entities/projectile.cpp
+@@ -9,6 +9,7 @@
+ #include <generated/protocol.h>
+ 
+ #include <game/mapitems.h>
++#include <game/server/ddx_grenade_bounce.h>
+ #include <game/server/gamecontext.h>
+ #include <game/server/gamemodes/ddnet.h>
+ 
+@@ -24,7 +25,8 @@ CProjectile::CProjectile(
+ 	int SoundImpact,
+ 	vec2 InitDir,
+ 	int Layer,
+-	int Number) :
++	int Number,
++	int OwnerGrenadeBounces) :
+ 	CEntity(pGameWorld, CGameWorld::ENTTYPE_PROJECTILE, true)
+ {
+ 	m_Type = Type;
+@@ -42,6 +44,9 @@ CProjectile::CProjectile(
+ 	m_Freeze = Freeze;
+ 
+ 	m_InitDir = InitDir;
++	m_RemainingOwnerGrenadeBounces = DdxGrenadeBounce::DISABLED;
++	if(Type == WEAPON_GRENADE)
++		m_RemainingOwnerGrenadeBounces = DdxGrenadeBounce::InitialRemaining(OwnerGrenadeBounces);
+ 	m_TuneZone = GameServer()->Collision()->IsTune(GameServer()->Collision()->GetMapIndex(m_Pos));
+ 
+ 	CCharacter *pOwnerChar = GameServer()->GetPlayerChar(m_Owner);
+@@ -103,7 +108,7 @@ void CProjectile::Tick()
+ 	if(pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit)
+ 		pTargetChr = GameServer()->m_World.IntersectCharacter(PrevPos, ColPos, m_Freeze ? 1.0f : 6.0f, ColPos, pOwnerChar, m_Owner);
+ 
+-	if(m_LifeSpan > -1)
++	if(DdxGrenadeBounce::UsesVanillaLifetime(m_RemainingOwnerGrenadeBounces) && m_LifeSpan > -1)
+ 		m_LifeSpan--;
+ 
+ 	CClientMask TeamMask = CClientMask().set();
+@@ -127,8 +132,26 @@ void CProjectile::Tick()
+ 		return;
+ 	}
+ 
+-	if(((pTargetChr && (pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit || m_Owner == -1 || pTargetChr == pOwnerChar)) || Collide || GameLayerClipped(CurPos)) && !IsWeaponCollide)
++	const bool Clipped = GameLayerClipped(CurPos);
++	if(((pTargetChr && (pOwnerChar ? !pOwnerChar->GrenadeHitDisabled() : g_Config.m_SvHit || m_Owner == -1 || pTargetChr == pOwnerChar)) || Collide || Clipped) && !IsWeaponCollide)
+ 	{
++		const bool CanOwnerGrenadeBounce = m_Type == WEAPON_GRENADE && Collide && !pTargetChr && !Clipped &&
++			DdxGrenadeBounce::CanBounce(m_RemainingOwnerGrenadeBounces);
++		if(CanOwnerGrenadeBounce)
++		{
++			CTuningParams *pTuning = GetTuning(m_TuneZone);
++			const bool HitX = Collision()->CheckPoint(ColPos.x, NewPos.y);
++			const bool HitY = Collision()->CheckPoint(NewPos.x, ColPos.y);
++			m_Direction = DdxGrenadeBounce::BounceDirection(
++				m_Direction, pTuning->m_GrenadeCurvature, pTuning->m_GrenadeSpeed, Ct, HitX, HitY);
++			m_InitDir = m_Direction * 100.0f;
++			m_Pos = NewPos;
++			m_StartTick = Server()->Tick();
++			m_RemainingOwnerGrenadeBounces =
++				DdxGrenadeBounce::AfterBounce(m_RemainingOwnerGrenadeBounces);
++			return;
++		}
++
+ 		if(m_Explosive /*??*/ && (!pTargetChr || (pTargetChr && (!m_Freeze || (m_Type == WEAPON_SHOTGUN && Collide)))))
+ 		{
+ 			int Number = 1;
+@@ -228,7 +251,7 @@ void CProjectile::Tick()
+ 			}
+ 		}
+ 	}
+-	if(m_LifeSpan == -1)
++	if(DdxGrenadeBounce::UsesVanillaLifetime(m_RemainingOwnerGrenadeBounces) && m_LifeSpan == -1)
+ 	{
+ 		if(m_Explosive)
+ 		{
+diff --git a/src/game/server/entities/projectile.h b/src/game/server/entities/projectile.h
+index dd099c6..d1eedd0 100644
+--- a/src/game/server/entities/projectile.h
++++ b/src/game/server/entities/projectile.h
+@@ -20,7 +20,8 @@ public:
+ 		int SoundImpact,
+ 		vec2 InitDir,
+ 		int Layer = 0,
+-		int Number = 0);
++		int Number = 0,
++		int OwnerGrenadeBounces = 0);
+ 
+ 	vec2 GetPos(float Time);
+ 
+@@ -53,6 +54,7 @@ private:
+ 	int m_DDRaceTeam;
+ 	bool m_IsSolo;
+ 	vec2 m_InitDir;
++	int m_RemainingOwnerGrenadeBounces;
+ 
+ public:
+ 	void SetBouncing(int Value);
+diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
+index 319c0cc..0a2d53e 100644
+--- a/src/game/server/gamecontext.cpp
++++ b/src/game/server/gamecontext.cpp
+@@ -2028,6 +2028,7 @@ bool CGameContext::OnClientDataPersist(int ClientId, void *pData)
+ 	pPersistent->m_MapVoteSubPage = Page.m_SubPage;
+ 	pPersistent->m_MapVoteSort = static_cast<int>(Page.m_Sort);
+ 	pPersistent->m_AipDelayTicks = m_apPlayers[ClientId]->m_AipDelayTicks;
++	pPersistent->m_GrenadeBounces = m_apPlayers[ClientId]->m_GrenadeBounces;
+ 	return true;
+ }
+ 
+@@ -2087,6 +2088,7 @@ void CGameContext::OnClientConnected(int ClientId, void *pData)
+ 		m_apPlayers[ClientId]->m_MapVoteSubPage = MapVotePage.m_SubPage;
+ 		m_apPlayers[ClientId]->m_MapVoteSort = static_cast<int>(MapVotePage.m_Sort);
+ 		m_apPlayers[ClientId]->m_AipDelayTicks = pPersistentData->m_AipDelayTicks;
++		m_apPlayers[ClientId]->m_GrenadeBounces = pPersistentData->m_GrenadeBounces;
+ 	}
+ 
+ 	SendMotd(ClientId);
+@@ -3719,6 +3721,35 @@ void CGameContext::ConAip(IConsole::IResult *pResult, void *pUserData)
+ 	pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "aip", aBuf);
+ }
+ 
++void CGameContext::ConGrenadeBounces(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = (CGameContext *)pUserData;
++	const int Bounces = pResult->GetInteger(0);
++	if(Bounces < 0)
++	{
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "grenade_bounces", "bounces must be 0 or greater");
++		return;
++	}
++
++	const int ClientId = pResult->NumArguments() > 1 ? pResult->GetVictim() : pResult->m_ClientId;
++	if(!CheckClientId(ClientId))
++	{
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "grenade_bounces", "a client must be specified outside rcon");
++		return;
++	}
++	CPlayer *pPlayer = pSelf->m_apPlayers[ClientId];
++	if(!pPlayer)
++	{
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "grenade_bounces", "client is not connected");
++		return;
++	}
++
++	pPlayer->m_GrenadeBounces = Bounces;
++	char aBuf[96];
++	str_format(aBuf, sizeof(aBuf), "grenade bounces client %d: %d", ClientId, Bounces);
++	pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "grenade_bounces", aBuf);
++}
++
+ void CGameContext::ConSetTeam(IConsole::IResult *pResult, void *pUserData)
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
+@@ -4434,6 +4465,7 @@ void CGameContext::OnConsoleInit()
+ 	Console()->Register("broadcast", "r[message]", CFGFLAG_SERVER, ConBroadcast, this, "Broadcast message");
+ 	Console()->Register("say", "r[message]", CFGFLAG_SERVER, ConSay, this, "Say in chat");
+ 	Console()->Register("aip", "?i[delay_ms] ?v[victim]", CFGFLAG_SERVER | CMDFLAG_OWNER, ConAip, this, "Toggle rapid fire or set its delay in milliseconds (owner only)");
++	Console()->Register("grenade_bounces", "i[bounces] ?v[victim]", CFGFLAG_SERVER | CMDFLAG_OWNER, ConGrenadeBounces, this, "Set extra grenade bounces for future shots (owner only)");
+ 	Console()->Register("set_team", "v[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
+ 	Console()->Register("set_team_all", "i[team-id]", CFGFLAG_SERVER, ConSetTeamAll, this, "Set team for all players (spectators = -1, game = 0)");
+ 	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
+diff --git a/src/game/server/gamecontext.h b/src/game/server/gamecontext.h
+index ade72d4..77dd555 100644
+--- a/src/game/server/gamecontext.h
++++ b/src/game/server/gamecontext.h
+@@ -162,6 +162,7 @@ class CGameContext : public IGameServer
+ 	static void ConBroadcast(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConSay(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConAip(IConsole::IResult *pResult, void *pUserData);
++	static void ConGrenadeBounces(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConSetTeam(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConSetTeamAll(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConHotReload(IConsole::IResult *pResult, void *pUserData);
+@@ -206,6 +207,7 @@ class CGameContext : public IGameServer
+ 		int m_MapVoteSubPage;
+ 		int m_MapVoteSort;
+ 		int m_AipDelayTicks;
++		int m_GrenadeBounces;
+ 	};
+ 
+ public:
+diff --git a/src/game/server/player.cpp b/src/game/server/player.cpp
+index 792d72b..e7963c8 100644
+--- a/src/game/server/player.cpp
++++ b/src/game/server/player.cpp
+@@ -128,6 +128,7 @@ void CPlayer::Reset()
+ 	m_SpecTeam = false;
+ 	m_NinjaJetpack = false;
+ 	m_AipDelayTicks = 0;
++	m_GrenadeBounces = 0;
+ 
+ 	m_Paused = PAUSE_NONE;
+ 	m_DND = false;
+diff --git a/src/game/server/player.h b/src/game/server/player.h
+index 05aa5ba..795d8b8 100644
+--- a/src/game/server/player.h
++++ b/src/game/server/player.h
+@@ -194,6 +194,7 @@ public:
+ 	bool m_SpecTeam;
+ 	bool m_NinjaJetpack;
+ 	int m_AipDelayTicks;
++	int m_GrenadeBounces;
+ 
+ 	// camera info is used sparingly for converting aim target to absolute world coordinates
+ 	class CCameraInfo
+diff --git a/src/test/ddx_grenade_bounce_test.cpp b/src/test/ddx_grenade_bounce_test.cpp
+new file mode 100644
+index 0000000..4856661
+--- /dev/null
++++ b/src/test/ddx_grenade_bounce_test.cpp
+@@ -0,0 +1,38 @@
++#include <game/server/ddx_grenade_bounce.h>
++
++#include <gtest/gtest.h>
++
++TEST(DdxGrenadeBounce, KeepsCustomGrenadesAliveThroughTheirFinalBounce)
++{
++	EXPECT_EQ(DdxGrenadeBounce::InitialRemaining(0), DdxGrenadeBounce::DISABLED);
++	EXPECT_TRUE(DdxGrenadeBounce::UsesVanillaLifetime(DdxGrenadeBounce::DISABLED));
++
++	int Remaining = DdxGrenadeBounce::InitialRemaining(3);
++	for(int Bounce = 0; Bounce < 3; Bounce++)
++	{
++		EXPECT_TRUE(DdxGrenadeBounce::CanBounce(Remaining));
++		Remaining = DdxGrenadeBounce::AfterBounce(Remaining);
++	}
++	EXPECT_EQ(Remaining, 0);
++	EXPECT_FALSE(DdxGrenadeBounce::CanBounce(Remaining));
++	EXPECT_FALSE(DdxGrenadeBounce::UsesVanillaLifetime(Remaining));
++}
++
++TEST(DdxGrenadeBounce, ReflectsTheImpactDirection)
++{
++	const vec2 FloorBounce = DdxGrenadeBounce::BounceDirection(
++		vec2(1.0f, 0.0f), 7.0f, 1000.0f, 0.5f, false, true);
++	EXPECT_GT(FloorBounce.x, 0.0f);
++	EXPECT_LT(FloorBounce.y, 0.0f);
++	EXPECT_NEAR(length(FloorBounce), 1.0f, 0.0001f);
++
++	const vec2 WallBounce = DdxGrenadeBounce::BounceDirection(
++		vec2(1.0f, 0.0f), 0.0f, 1000.0f, 0.5f, true, false);
++	EXPECT_FLOAT_EQ(WallBounce.x, -1.0f);
++	EXPECT_FLOAT_EQ(WallBounce.y, 0.0f);
++
++	const vec2 CornerBounce = DdxGrenadeBounce::BounceDirection(
++		vec2(1.0f, 0.0f), 0.0f, 1000.0f, 0.5f, false, false);
++	EXPECT_FLOAT_EQ(CornerBounce.x, -1.0f);
++	EXPECT_FLOAT_EQ(CornerBounce.y, 0.0f);
++}
