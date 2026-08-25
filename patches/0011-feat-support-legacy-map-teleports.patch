@@ -1,0 +1,993 @@
+From 882a575575fc807222d32fb764bed2570673577c Mon Sep 17 00:00:00 2001
+From: LgcY-v2 <menhardandre@gmail.com>
+Date: Tue, 25 Aug 2026 11:47:54 +0000
+Subject: [PATCH 11/11] feat: support legacy map teleports
+
+---
+ CMakeLists.txt                         |   2 +
+ src/engine/shared/config_variables.h   |   1 +
+ src/game/collision.cpp                 | 129 ++++++++++++++++---
+ src/game/collision.h                   |  21 ++++
+ src/game/ddx_legacy_teleport.h         | 168 +++++++++++++++++++++++++
+ src/game/server/entities/character.cpp | 151 ++++++++++++++++++++++
+ src/game/server/entities/character.h   |   4 +
+ src/game/server/gamecontext.cpp        |  20 ++-
+ src/game/server/teams.cpp              |   2 +
+ src/test/ddx_legacy_teleport_test.cpp  | 147 ++++++++++++++++++++++
+ 10 files changed, 628 insertions(+), 17 deletions(-)
+ create mode 100644 src/game/ddx_legacy_teleport.h
+ create mode 100644 src/test/ddx_legacy_teleport_test.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d8de98e88..829b9c303 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2281,6 +2281,7 @@ set_src(GAME_SHARED GLOB src/game
+   alloc.h
+   collision.cpp
+   collision.h
++  ddx_legacy_teleport.h
+   gamecore.cpp
+   gamecore.h
+   layers.cpp
+@@ -3239,6 +3240,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
+     dbg_test.cpp
+     ddx_auth_test.cpp
+     ddx_grenade_bounce_test.cpp
++    ddx_legacy_teleport_test.cpp
+     ddx_rapid_fire_test.cpp
+     editor_test.cpp
+     fs_test.cpp
+diff --git a/src/engine/shared/config_variables.h b/src/engine/shared/config_variables.h
+index 8c28f200b..3853967a1 100644
+--- a/src/engine/shared/config_variables.h
++++ b/src/engine/shared/config_variables.h
+@@ -597,6 +597,7 @@ MACRO_CONFIG_INT(SvMinTeamSize, sv_min_team_size, 2, 1, SERVER_MAX_CLIENTS, CFGF
+ MACRO_CONFIG_INT(SvMaxTeamSize, sv_max_team_size, SERVER_MAX_CLIENTS, 1, SERVER_MAX_CLIENTS, CFGFLAG_SERVER | CFGFLAG_GAME, "Maximum team size")
+ MACRO_CONFIG_INT(SvMapVote, sv_map_vote, 1, 0, 1, CFGFLAG_SERVER, "Whether to allow /map")
+ MACRO_CONFIG_INT(SvMapVoteCatalog, sv_map_vote_catalog, 0, 0, 1, CFGFLAG_SERVER, "Publish the browsable DDRace and Gores map catalog on every map")
++MACRO_CONFIG_INT(SvDdxTeleFamily, sv_ddx_tele_family, 0, 0, 0, CFGFLAG_SERVER | CFGFLAG_GAME, "Legacy teleport profile (0 modern, 1 F-DDrace 93/94, 2 F-DDrace 95/94, 3 XXL standard; every other value is rejected)")
+ MACRO_CONFIG_STR(SvMapArchiveIndex, sv_map_archive_index, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "Verified map archive search index")
+ MACRO_CONFIG_STR(SvMapArchiveMetadata, sv_map_archive_metadata, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "Verified map archive archive-date metadata")
+ MACRO_CONFIG_STR(SvMapArchiveArchive, sv_map_archive_archive, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "Verified map archive 7z archive")
+diff --git a/src/game/collision.cpp b/src/game/collision.cpp
+index c22ebac06..d018d2ab4 100644
+--- a/src/game/collision.cpp
++++ b/src/game/collision.cpp
+@@ -14,6 +14,7 @@
+ #include <game/layers.h>
+ #include <game/mapitems.h>
+ 
++#include <algorithm>
+ #include <cmath>
+ 
+ vec2 ClampVel(int MoveRestriction, vec2 Vel)
+@@ -123,6 +124,27 @@ void CCollision::Init(class CLayers *pLayers)
+ 		}
+ 	}
+ 
++	InitTeleports();
++}
++
++void CCollision::ConfigureDdxLegacy(const DdxLegacyTeleport::CProfile &Profile)
++{
++	if(Profile == m_DdxLegacyProfile)
++		return;
++
++	m_DdxLegacyProfile = Profile;
++	m_TeleIns.clear();
++	m_TeleOuts.clear();
++	m_TeleCheckOuts.clear();
++	m_TeleOthers.clear();
++	m_vDdxCombinedOutputs.clear();
++	m_Ddx05TeleOuts.clear();
++	InitTeleports();
++	InitDdx05Teleports();
++}
++
++void CCollision::InitTeleports()
++{
+ 	if(m_pTele)
+ 	{
+ 		for(int i = 0; i < m_Width * m_Height; i++)
+@@ -136,6 +158,18 @@ void CCollision::Init(class CLayers *pLayers)
+ 				{
+ 					m_TeleIns[Number - 1].push_back(TelePos);
+ 				}
++				else if(DdxLegacyTeleport::IsCombinedNormal(m_DdxLegacyProfile.m_TeleLayer, Type))
++				{
++					m_TeleIns[Number - 1].push_back(TelePos);
++					m_vDdxCombinedOutputs.push_back({i, static_cast<int>(m_TeleOuts[Number - 1].size())});
++					m_TeleOuts[Number - 1].push_back(TelePos);
++				}
++				else if(DdxLegacyTeleport::IsCombinedEvil(m_DdxLegacyProfile.m_TeleLayer, Type))
++				{
++					m_vDdxCombinedOutputs.push_back({i, static_cast<int>(m_TeleOuts[Number - 1].size())});
++					m_TeleOuts[Number - 1].push_back(TelePos);
++					m_TeleOthers[Number - 1].push_back(TelePos);
++				}
+ 				else if(Type == TILE_TELEOUT)
+ 				{
+ 					m_TeleOuts[Number - 1].push_back(TelePos);
+@@ -153,6 +187,18 @@ void CCollision::Init(class CLayers *pLayers)
+ 	}
+ }
+ 
++void CCollision::InitDdx05Teleports()
++{
++	if(!m_pTiles || m_DdxLegacyProfile.m_GameLayer != DdxLegacyTeleport::EGameLayer::TEEWORLDS_05)
++		return;
++	for(int i = 0; i < m_Width * m_Height; i++)
++	{
++		const int Number = DdxLegacyTeleport::Legacy05TeleportOutNumber(m_pTiles[i].m_Index);
++		if(Number)
++			m_Ddx05TeleOuts[Number].push_back(GetPos(i));
++	}
++}
++
+ void CCollision::Unload()
+ {
+ 	m_pTiles = nullptr;
+@@ -166,12 +212,15 @@ void CCollision::Unload()
+ 	m_TeleOuts.clear();
+ 	m_TeleCheckOuts.clear();
+ 	m_TeleOthers.clear();
++	m_vDdxCombinedOutputs.clear();
++	m_Ddx05TeleOuts.clear();
+ 
+ 	m_pTele = nullptr;
+ 	m_pSpeedup = nullptr;
+ 	m_pFront = nullptr;
+ 	m_pSwitch = nullptr;
+ 	m_pTune = nullptr;
++	m_DdxLegacyProfile = {};
+ 	delete[] m_pDoor;
+ 	m_pDoor = nullptr;
+ }
+@@ -624,15 +673,15 @@ bool CCollision::IsThrough(int x, int y, int OffsetX, int OffsetY, vec2 Pos0, ve
+ 	if(m_pFront && m_pFront[Index].m_Index == TILE_THROUGH_DIR && ((m_pFront[Index].m_Flags == ROTATION_0 && Pos0.y > Pos1.y) || (m_pFront[Index].m_Flags == ROTATION_90 && Pos0.x < Pos1.x) || (m_pFront[Index].m_Flags == ROTATION_180 && Pos0.y < Pos1.y) || (m_pFront[Index].m_Flags == ROTATION_270 && Pos0.x > Pos1.x)))
+ 		return true;
+ 	const int OffsetIndex = GetPureMapIndex(x + OffsetX, y + OffsetY);
+-	return m_pTiles[OffsetIndex].m_Index == TILE_THROUGH || (m_pFront && m_pFront[OffsetIndex].m_Index == TILE_THROUGH);
++	return GetTileIndex(OffsetIndex) == TILE_THROUGH || (m_pFront && m_pFront[OffsetIndex].m_Index == TILE_THROUGH);
+ }
+ 
+ bool CCollision::IsHookBlocker(int x, int y, vec2 Pos0, vec2 Pos1) const
+ {
+ 	const int Index = GetPureMapIndex(x, y);
+-	if(m_pTiles[Index].m_Index == TILE_THROUGH_ALL || (m_pFront && m_pFront[Index].m_Index == TILE_THROUGH_ALL))
++	if(GetTileIndex(Index) == TILE_THROUGH_ALL || (m_pFront && m_pFront[Index].m_Index == TILE_THROUGH_ALL))
+ 		return true;
+-	if(m_pTiles[Index].m_Index == TILE_THROUGH_DIR && ((m_pTiles[Index].m_Flags == ROTATION_0 && Pos0.y < Pos1.y) ||
++	if(GetTileIndex(Index) == TILE_THROUGH_DIR && ((m_pTiles[Index].m_Flags == ROTATION_0 && Pos0.y < Pos1.y) ||
+ 								  (m_pTiles[Index].m_Flags == ROTATION_90 && Pos0.x > Pos1.x) ||
+ 								  (m_pTiles[Index].m_Flags == ROTATION_180 && Pos0.y > Pos1.y) ||
+ 								  (m_pTiles[Index].m_Flags == ROTATION_270 && Pos0.x < Pos1.x)))
+@@ -647,7 +696,7 @@ int CCollision::IsWallJump(int Index) const
+ 	if(Index < 0)
+ 		return 0;
+ 
+-	return m_pTiles[Index].m_Index == TILE_WALLJUMP;
++	return GetTileIndex(Index) == TILE_WALLJUMP;
+ }
+ 
+ int CCollision::IsNoLaser(int x, int y) const
+@@ -665,7 +714,7 @@ int CCollision::IsTeleport(int Index) const
+ 	if(Index < 0 || !m_pTele)
+ 		return 0;
+ 
+-	if(m_pTele[Index].m_Type == TILE_TELEIN)
++	if(m_pTele[Index].m_Type == TILE_TELEIN || DdxLegacyTeleport::IsCombinedNormal(m_DdxLegacyProfile.m_TeleLayer, m_pTele[Index].m_Type))
+ 		return m_pTele[Index].m_Number;
+ 
+ 	return 0;
+@@ -678,12 +727,48 @@ int CCollision::IsEvilTeleport(int Index) const
+ 	if(!m_pTele)
+ 		return 0;
+ 
+-	if(m_pTele[Index].m_Type == TILE_TELEINEVIL)
++	if(m_pTele[Index].m_Type == TILE_TELEINEVIL || DdxLegacyTeleport::IsCombinedEvil(m_DdxLegacyProfile.m_TeleLayer, m_pTele[Index].m_Type))
+ 		return m_pTele[Index].m_Number;
+ 
+ 	return 0;
+ }
+ 
++bool CCollision::IsDdxCombinedTeleport(int Index) const
++{
++	if(Index < 0 || !m_pTele)
++		return false;
++	const int Type = m_pTele[Index].m_Type;
++	return DdxLegacyTeleport::IsCombinedNormal(m_DdxLegacyProfile.m_TeleLayer, Type) ||
++		DdxLegacyTeleport::IsCombinedEvil(m_DdxLegacyProfile.m_TeleLayer, Type);
++}
++
++int CCollision::DdxCombinedOutputIndex(int Index) const
++{
++	const auto It = std::lower_bound(
++		m_vDdxCombinedOutputs.begin(), m_vDdxCombinedOutputs.end(), Index,
++		[](const CCombinedOutput &Output, int MapIndex) { return Output.m_MapIndex < MapIndex; });
++	return It != m_vDdxCombinedOutputs.end() && It->m_MapIndex == Index ? It->m_OutputIndex : -1;
++}
++
++int CCollision::Ddx05Teleport(int Index) const
++{
++	return DdxLegacyTeleport::Legacy05TeleportInNumber(GetRawTileIndex(Index));
++}
++
++const std::vector<vec2> &CCollision::Ddx05TeleOuts(int Number) const
++{
++	static const std::vector<vec2> s_vEmpty;
++	const auto It = m_Ddx05TeleOuts.find(Number);
++	return It == m_Ddx05TeleOuts.end() ? s_vEmpty : It->second;
++}
++
++const std::vector<vec2> &CCollision::DdxTeleOuts(int Number) const
++{
++	static const std::vector<vec2> s_vEmpty;
++	const auto It = m_TeleOuts.find(Number);
++	return It == m_TeleOuts.end() ? s_vEmpty : It->second;
++}
++
+ bool CCollision::IsCheckTeleport(int Index) const
+ {
+ 	if(Index < 0 || !m_pTele)
+@@ -800,7 +885,7 @@ int CCollision::MoverSpeed(int x, int y, vec2 *pSpeed) const
+ {
+ 	int Nx = std::clamp(x / 32, 0, m_Width - 1);
+ 	int Ny = std::clamp(y / 32, 0, m_Height - 1);
+-	int Index = m_pTiles[Ny * m_Width + Nx].m_Index;
++	int Index = GetTileIndex(Ny * m_Width + Nx);
+ 
+ 	if(Index != TILE_CP && Index != TILE_CP_F)
+ 	{
+@@ -850,11 +935,14 @@ bool CCollision::TileExists(int Index) const
+ 	if(Index < 0)
+ 		return false;
+ 
+-	if((m_pTiles[Index].m_Index >= TILE_FREEZE && m_pTiles[Index].m_Index <= TILE_TELE_LASER_DISABLE) || (m_pTiles[Index].m_Index >= TILE_LFREEZE && m_pTiles[Index].m_Index <= TILE_LUNFREEZE))
++	if(m_DdxLegacyProfile.m_GameLayer == DdxLegacyTeleport::EGameLayer::TEEWORLDS_05 && DdxLegacyTeleport::ConsumesLegacy05GameTile(GetRawTileIndex(Index)))
++		return true;
++	const int Tile = GetTileIndex(Index);
++	if((Tile >= TILE_FREEZE && Tile <= TILE_TELE_LASER_DISABLE) || (Tile >= TILE_LFREEZE && Tile <= TILE_LUNFREEZE))
+ 		return true;
+ 	if(m_pFront && ((m_pFront[Index].m_Index >= TILE_FREEZE && m_pFront[Index].m_Index <= TILE_TELE_LASER_DISABLE) || (m_pFront[Index].m_Index >= TILE_LFREEZE && m_pFront[Index].m_Index <= TILE_LUNFREEZE)))
+ 		return true;
+-	if(m_pTele && (m_pTele[Index].m_Type == TILE_TELEIN || m_pTele[Index].m_Type == TILE_TELEINEVIL || m_pTele[Index].m_Type == TILE_TELECHECKINEVIL || m_pTele[Index].m_Type == TILE_TELECHECK || m_pTele[Index].m_Type == TILE_TELECHECKIN))
++	if(m_pTele && (m_pTele[Index].m_Type == TILE_TELEIN || m_pTele[Index].m_Type == TILE_TELEINEVIL || m_pTele[Index].m_Type == TILE_TELECHECKINEVIL || m_pTele[Index].m_Type == TILE_TELECHECK || m_pTele[Index].m_Type == TILE_TELECHECKIN || IsDdxCombinedTeleport(Index)))
+ 		return true;
+ 	if(m_pSpeedup && m_pSpeedup[Index].m_Force > 0)
+ 		return true;
+@@ -875,14 +963,18 @@ bool CCollision::TileExistsNext(int Index) const
+ 	int TileOnTheRight = (Index + 1 < m_Width * m_Height) ? Index + 1 : Index;
+ 	int TileBelow = (Index + m_Width < m_Width * m_Height) ? Index + m_Width : Index;
+ 	int TileAbove = (Index - m_Width > 0) ? Index - m_Width : Index;
++	const int TileRight = GetTileIndex(TileOnTheRight);
++	const int TileLeft = GetTileIndex(TileOnTheLeft);
++	const int TileDown = GetTileIndex(TileBelow);
++	const int TileUp = GetTileIndex(TileAbove);
+ 
+-	if((m_pTiles[TileOnTheRight].m_Index == TILE_STOP && m_pTiles[TileOnTheRight].m_Flags == ROTATION_270) || (m_pTiles[TileOnTheLeft].m_Index == TILE_STOP && m_pTiles[TileOnTheLeft].m_Flags == ROTATION_90))
++	if((TileRight == TILE_STOP && m_pTiles[TileOnTheRight].m_Flags == ROTATION_270) || (TileLeft == TILE_STOP && m_pTiles[TileOnTheLeft].m_Flags == ROTATION_90))
+ 		return true;
+-	if((m_pTiles[TileBelow].m_Index == TILE_STOP && m_pTiles[TileBelow].m_Flags == ROTATION_0) || (m_pTiles[TileAbove].m_Index == TILE_STOP && m_pTiles[TileAbove].m_Flags == ROTATION_180))
++	if((TileDown == TILE_STOP && m_pTiles[TileBelow].m_Flags == ROTATION_0) || (TileUp == TILE_STOP && m_pTiles[TileAbove].m_Flags == ROTATION_180))
+ 		return true;
+-	if(m_pTiles[TileOnTheRight].m_Index == TILE_STOPA || m_pTiles[TileOnTheLeft].m_Index == TILE_STOPA || ((m_pTiles[TileOnTheRight].m_Index == TILE_STOPS || m_pTiles[TileOnTheLeft].m_Index == TILE_STOPS)))
++	if(TileRight == TILE_STOPA || TileLeft == TILE_STOPA || TileRight == TILE_STOPS || TileLeft == TILE_STOPS)
+ 		return true;
+-	if(m_pTiles[TileBelow].m_Index == TILE_STOPA || m_pTiles[TileAbove].m_Index == TILE_STOPA || ((m_pTiles[TileBelow].m_Index == TILE_STOPS || m_pTiles[TileAbove].m_Index == TILE_STOPS) && m_pTiles[TileBelow].m_Flags | ROTATION_180 | ROTATION_0))
++	if(TileDown == TILE_STOPA || TileUp == TILE_STOPA || ((TileDown == TILE_STOPS || TileUp == TILE_STOPS) && m_pTiles[TileBelow].m_Flags | ROTATION_180 | ROTATION_0))
+ 		return true;
+ 	if(m_pFront)
+ 	{
+@@ -974,6 +1066,13 @@ vec2 CCollision::GetPos(int Index) const
+ }
+ 
+ int CCollision::GetTileIndex(int Index) const
++{
++	if(Index < 0)
++		return 0;
++	return DdxLegacyTeleport::ModernGameTile(m_DdxLegacyProfile.m_GameLayer, m_pTiles[Index].m_Index);
++}
++
++int CCollision::GetRawTileIndex(int Index) const
+ {
+ 	if(Index < 0)
+ 		return 0;
+@@ -1003,7 +1102,7 @@ int CCollision::GetFrontTileFlags(int Index) const
+ 
+ int CCollision::GetIndex(int Nx, int Ny) const
+ {
+-	return m_pTiles[Ny * m_Width + Nx].m_Index;
++	return GetTileIndex(Ny * m_Width + Nx);
+ }
+ 
+ int CCollision::GetIndex(vec2 PrevPos, vec2 Pos) const
+@@ -1246,7 +1345,7 @@ int CCollision::IsTimeCheckpoint(int Index) const
+ 	if(Index < 0)
+ 		return -1;
+ 
+-	int z = m_pTiles[Index].m_Index;
++	int z = GetTileIndex(Index);
+ 	if(z >= TILE_TIME_CHECKPOINT_FIRST && z <= TILE_TIME_CHECKPOINT_LAST)
+ 		return z - TILE_TIME_CHECKPOINT_FIRST;
+ 	return -1;
+diff --git a/src/game/collision.h b/src/game/collision.h
+index 9252f4fbd..2748425f6 100644
+--- a/src/game/collision.h
++++ b/src/game/collision.h
+@@ -7,6 +7,8 @@
+ 
+ #include <engine/shared/protocol.h>
+ 
++#include <game/ddx_legacy_teleport.h>
++
+ #include <map>
+ #include <vector>
+ 
+@@ -46,6 +48,8 @@ public:
+ 	int GetCollisionAt(float x, float y) const { return GetTile(round_to_int(x), round_to_int(y)); }
+ 	int GetWidth() const { return m_Width; }
+ 	int GetHeight() const { return m_Height; }
++	void ConfigureDdxLegacy(const DdxLegacyTeleport::CProfile &Profile);
++	const DdxLegacyTeleport::CProfile &DdxLegacyProfile() const { return m_DdxLegacyProfile; }
+ 	int IntersectLine(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision) const;
+ 	int IntersectLineTeleWeapon(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision, int *pTeleNr = nullptr) const;
+ 	int IntersectLineTeleHook(vec2 Pos0, vec2 Pos1, vec2 *pOutCollision, vec2 *pOutBeforeCollision, int *pTeleNr = nullptr) const;
+@@ -83,11 +87,17 @@ public:
+ 	bool TileExistsNext(int Index) const;
+ 	vec2 GetPos(int Index) const;
+ 	int GetTileIndex(int Index) const;
++	int GetRawTileIndex(int Index) const;
+ 	int GetFrontTileIndex(int Index) const;
+ 	int GetTileFlags(int Index) const;
+ 	int GetFrontTileFlags(int Index) const;
+ 	int IsTeleport(int Index) const;
+ 	int IsEvilTeleport(int Index) const;
++	bool IsDdxCombinedTeleport(int Index) const;
++	int DdxCombinedOutputIndex(int Index) const;
++	int Ddx05Teleport(int Index) const;
++	const std::vector<vec2> &Ddx05TeleOuts(int Number) const;
++	const std::vector<vec2> &DdxTeleOuts(int Number) const;
+ 	bool IsCheckTeleport(int Index) const;
+ 	bool IsCheckEvilTeleport(int Index) const;
+ 	int IsTeleportWeapon(int Index) const;
+@@ -146,6 +156,14 @@ public:
+ 	const std::vector<vec2> &TeleOthers(int Number) { return m_TeleOthers[Number]; }
+ 
+ private:
++	struct CCombinedOutput
++	{
++		int m_MapIndex;
++		int m_OutputIndex;
++	};
++
++	void InitTeleports();
++	void InitDdx05Teleports();
+ 	CLayers *m_pLayers;
+ 
+ 	int m_Width;
+@@ -158,6 +176,9 @@ private:
+ 	CSwitchTile *m_pSwitch;
+ 	CTuneTile *m_pTune;
+ 	CDoorTile *m_pDoor;
++	DdxLegacyTeleport::CProfile m_DdxLegacyProfile;
++	std::vector<CCombinedOutput> m_vDdxCombinedOutputs;
++	std::map<int, std::vector<vec2>> m_Ddx05TeleOuts;
+ 
+ 	// TILE_TELEIN
+ 	std::map<int, std::vector<vec2>> m_TeleIns;
+diff --git a/src/game/ddx_legacy_teleport.h b/src/game/ddx_legacy_teleport.h
+new file mode 100644
+index 000000000..e9f70df89
+--- /dev/null
++++ b/src/game/ddx_legacy_teleport.h
+@@ -0,0 +1,168 @@
++#ifndef GAME_DDX_LEGACY_TELEPORT_H
++#define GAME_DDX_LEGACY_TELEPORT_H
++
++#include <base/hash.h>
++
++#include <cstddef>
++#include <limits>
++
++namespace DdxLegacyTeleport
++{
++enum class EGameLayer
++{
++	MODERN,
++	TEEWORLDS_05,
++};
++
++enum class ETeleLayer
++{
++	MODERN,
++	FDDRACE_93_94,
++	FDDRACE_95_94,
++	XXL_STANDARD,
++};
++
++struct CProfile
++{
++	EGameLayer m_GameLayer = EGameLayer::MODERN;
++	ETeleLayer m_TeleLayer = ETeleLayer::MODERN;
++
++	bool operator==(const CProfile &Other) const = default;
++};
++
++constexpr bool IsKnownTeleSelector(int Value)
++{
++	return Value >= 0 && Value <= 3;
++}
++
++constexpr ETeleLayer TeleLayerFromSelector(int Value)
++{
++	switch(Value)
++	{
++	case 1: return ETeleLayer::FDDRACE_93_94;
++	case 2: return ETeleLayer::FDDRACE_95_94;
++	case 3: return ETeleLayer::XXL_STANDARD;
++	default: return ETeleLayer::MODERN;
++	}
++}
++
++constexpr bool IsCombined(ETeleLayer Layer)
++{
++	return Layer == ETeleLayer::FDDRACE_93_94 || Layer == ETeleLayer::FDDRACE_95_94;
++}
++
++constexpr bool IsCombinedNormal(ETeleLayer Layer, int Type)
++{
++	return (Layer == ETeleLayer::FDDRACE_93_94 && Type == 93) ||
++		(Layer == ETeleLayer::FDDRACE_95_94 && Type == 95);
++}
++
++constexpr bool IsCombinedEvil(ETeleLayer Layer, int Type)
++{
++	return IsCombined(Layer) && Type == 94;
++}
++
++constexpr SHA256_DIGEST LEGACY_05_MAP_SHA256 = {{
++	0x8f, 0x4a, 0x61, 0x4b, 0x00, 0xf3, 0x19, 0x69,
++	0x4d, 0x87, 0x7e, 0x3e, 0xe2, 0x4e, 0xe3, 0xbd,
++	0x59, 0xcb, 0xe5, 0x49, 0xa8, 0xea, 0xb2, 0x67,
++	0x0d, 0xb9, 0xec, 0x05, 0x04, 0xa6, 0x0c, 0xcf,
++}};
++
++constexpr unsigned LEGACY_05_MAP_SIZE = 107225;
++
++inline bool IsLegacy05Map(unsigned Size, const SHA256_DIGEST &Sha256)
++{
++	return Size == LEGACY_05_MAP_SIZE && Sha256 == LEGACY_05_MAP_SHA256;
++}
++
++inline CProfile ResolveProfile(int TeleSelector, unsigned MapSize, const SHA256_DIGEST &MapSha256)
++{
++	return {
++		IsLegacy05Map(MapSize, MapSha256) ? EGameLayer::TEEWORLDS_05 : EGameLayer::MODERN,
++		TeleLayerFromSelector(TeleSelector),
++	};
++}
++
++constexpr const char *GameLayerName(EGameLayer Layer)
++{
++	return Layer == EGameLayer::TEEWORLDS_05 ? "teeworlds-0.5" : "modern";
++}
++
++constexpr const char *TeleLayerName(ETeleLayer Layer)
++{
++	switch(Layer)
++	{
++	case ETeleLayer::FDDRACE_93_94: return "f-ddrace-93-94";
++	case ETeleLayer::FDDRACE_95_94: return "f-ddrace-95-94";
++	case ETeleLayer::XXL_STANDARD: return "xxl-standard";
++	case ETeleLayer::MODERN: return "modern";
++	}
++	return "modern";
++}
++
++constexpr int ModernGameTile(EGameLayer Layer, int RawTile)
++{
++	if(Layer == EGameLayer::MODERN)
++		return RawTile;
++	return (RawTile >= 0 && RawTile <= 4) || RawTile == 33 || RawTile == 34 ? RawTile : 0;
++}
++
++constexpr bool ConsumesLegacy05GameTile(int Tile)
++{
++	return (Tile >= 5 && Tile <= 32) || (Tile >= 35 && Tile <= 190);
++}
++
++constexpr int Legacy05TeleportInNumber(int Tile)
++{
++	return Tile >= 36 && Tile <= 190 && Tile % 2 == 0 ? (Tile - 1) >> 1 : 0;
++}
++
++constexpr int Legacy05TeleportOutNumber(int Tile)
++{
++	return Tile >= 35 && Tile <= 189 && Tile % 2 == 1 ? Tile >> 1 : 0;
++}
++
++struct CLegacy05Boost
++{
++	int m_X;
++	int m_Y;
++	bool m_Freeze;
++
++	bool operator==(const CLegacy05Boost &Other) const = default;
++};
++
++constexpr CLegacy05Boost Legacy05Boost(int Tile)
++{
++	switch(Tile)
++	{
++	case 5: return {-3, 0, false};
++	case 6: return {3, 0, false};
++	case 8: return {0, -2, false};
++	case 12: return {-15, 0, false};
++	case 13: return {15, 0, false};
++	case 14: return {0, 15, false};
++	case 15: return {0, -15, false};
++	case 21: return {-3, 0, true};
++	case 22: return {3, 0, true};
++	case 23: return {0, 2, true};
++	default: return {0, 0, false};
++	}
++}
++
++constexpr size_t INVALID_OUTPUT = std::numeric_limits<size_t>::max();
++
++constexpr size_t AlternativeOutputIndex(size_t OutputCount, size_t CurrentIndex, size_t Draw)
++{
++	if(OutputCount <= 1 || CurrentIndex >= OutputCount || Draw >= OutputCount - 1)
++		return INVALID_OUTPUT;
++	return Draw >= CurrentIndex ? Draw + 1 : Draw;
++}
++
++constexpr int RetainCombinedEntry(int PreviousNumber, int NormalNumber, int EvilNumber)
++{
++	return (NormalNumber == PreviousNumber || EvilNumber == PreviousNumber) ? PreviousNumber : 0;
++}
++} // namespace DdxLegacyTeleport
++
++#endif // GAME_DDX_LEGACY_TELEPORT_H
+diff --git a/src/game/server/entities/character.cpp b/src/game/server/entities/character.cpp
+index 8d16d02ab..5a35ba560 100644
+--- a/src/game/server/entities/character.cpp
++++ b/src/game/server/entities/character.cpp
+@@ -17,6 +17,7 @@
+ #include <generated/protocol.h>
+ #include <generated/server_data.h>
+ 
++#include <game/ddx_legacy_teleport.h>
+ #include <game/mapitems.h>
+ #include <game/server/gamecontext.h>
+ #include <game/server/ddx_rapid_fire.h>
+@@ -68,6 +69,7 @@ bool CCharacter::Spawn(CPlayer *pPlayer, vec2 Pos)
+ 	m_LastRefillJumps = false;
+ 	m_LastPenalty = false;
+ 	m_LastBonus = false;
++	m_DdxLastCombinedTeleporter = 0;
+ 
+ 	m_TeleGunTeleport = false;
+ 	m_IsBlueTeleGunTeleport = false;
+@@ -1617,6 +1619,150 @@ void CCharacter::SetTimeCheckpoint(int TimeCheckpoint)
+ 	}
+ }
+ 
++bool CCharacter::HandleDdxLegacyGameTile(int MapIndex)
++{
++	if(Collision()->DdxLegacyProfile().m_GameLayer != DdxLegacyTeleport::EGameLayer::TEEWORLDS_05)
++		return false;
++
++	const int Tile = Collision()->GetRawTileIndex(MapIndex);
++	if(!DdxLegacyTeleport::ConsumesLegacy05GameTile(Tile))
++		return false;
++
++	const DdxLegacyTeleport::CLegacy05Boost Boost = DdxLegacyTeleport::Legacy05Boost(Tile);
++	if(Boost.m_X || Boost.m_Y)
++	{
++		m_Core.m_Vel += vec2(Boost.m_X, Boost.m_Y);
++		if(Boost.m_Freeze)
++			Freeze(3);
++		return true;
++	}
++	if(Tile == 9)
++	{
++		Freeze(3);
++		return true;
++	}
++	if(Tile == 11)
++	{
++		Unfreeze();
++		return true;
++	}
++
++	const int Number = Collision()->Ddx05Teleport(MapIndex);
++	if(Number)
++	{
++		const std::vector<vec2> &vOutputs = Collision()->Ddx05TeleOuts(Number);
++		if(!vOutputs.empty())
++		{
++			m_Core.m_Pos = vOutputs[GameWorld()->m_Core.RandomOr0(vOutputs.size())];
++			ResetHook();
++		}
++	}
++	return true;
++}
++
++bool CCharacter::HandleDdxLegacyTeleporter(int MapIndex)
++{
++	const DdxLegacyTeleport::ETeleLayer Layer = Collision()->DdxLegacyProfile().m_TeleLayer;
++	if(DdxLegacyTeleport::IsCombined(Layer))
++	{
++		const int Normal = Collision()->IsTeleport(MapIndex);
++		const int Evil = Collision()->IsEvilTeleport(MapIndex);
++		m_DdxLastCombinedTeleporter = DdxLegacyTeleport::RetainCombinedEntry(m_DdxLastCombinedTeleporter, Normal, Evil);
++		if(!Collision()->IsDdxCombinedTeleport(MapIndex))
++			return false;
++
++		const bool IsEvil = Evil != 0;
++		const int Number = IsEvil ? Evil : Normal;
++		if(Number <= 0 || m_Core.m_Super || m_Core.m_Invincible || m_DdxLastCombinedTeleporter == Number)
++			return true;
++		if(!IsEvil && (g_Config.m_SvOldTeleportHook || g_Config.m_SvOldTeleportWeapons))
++			return true;
++
++		const std::vector<vec2> &vOutputs = Collision()->DdxTeleOuts(Number - 1);
++		const int CurrentOutput = Collision()->DdxCombinedOutputIndex(MapIndex);
++		if(vOutputs.size() <= 1 || CurrentOutput < 0)
++			return true;
++		const size_t Draw = GameWorld()->m_Core.RandomOr0(vOutputs.size() - 1);
++		const size_t Output = DdxLegacyTeleport::AlternativeOutputIndex(vOutputs.size(), CurrentOutput, Draw);
++		if(Output == DdxLegacyTeleport::INVALID_OUTPUT)
++			return true;
++
++		m_DdxLastCombinedTeleporter = Number;
++		m_Core.m_Pos = vOutputs[Output];
++		if(IsEvil)
++		{
++			if(!g_Config.m_SvOldTeleportHook && !g_Config.m_SvOldTeleportWeapons)
++			{
++				m_Core.m_Vel = vec2(0, 0);
++				if(!g_Config.m_SvTeleportHoldHook)
++				{
++					ResetHook();
++					GameWorld()->ReleaseHooked(GetPlayer()->GetCid());
++				}
++				if(g_Config.m_SvTeleportLoseWeapons)
++					ResetPickups();
++			}
++		}
++		else
++		{
++			if(!g_Config.m_SvTeleportHoldHook)
++				ResetHook();
++			if(g_Config.m_SvTeleportLoseWeapons)
++				ResetPickups();
++		}
++		return true;
++	}
++
++	if(Layer != DdxLegacyTeleport::ETeleLayer::XXL_STANDARD)
++		return false;
++
++	const int Normal = Collision()->IsTeleport(MapIndex);
++	if(Normal)
++	{
++		const std::vector<vec2> &vOutputs = Collision()->DdxTeleOuts(Normal - 1);
++		if(!vOutputs.empty())
++		{
++			m_Core.m_Pos = vOutputs[GameWorld()->m_Core.RandomOr0(vOutputs.size())];
++			ResetHook();
++		}
++		return true;
++	}
++
++	const int Evil = Collision()->IsEvilTeleport(MapIndex);
++	if(Evil)
++	{
++		const std::vector<vec2> &vOutputs = Collision()->DdxTeleOuts(Evil - 1);
++		if(!m_Core.m_Super && !m_Core.m_Invincible && !vOutputs.empty())
++		{
++			m_Core.m_Pos = vOutputs[GameWorld()->m_Core.RandomOr0(vOutputs.size())];
++			m_Core.m_Vel = vec2(0, 0);
++			ResetHook();
++			GameWorld()->ReleaseHooked(GetPlayer()->GetCid());
++		}
++		return true;
++	}
++
++	if(!Collision()->IsCheckTeleport(MapIndex))
++		return false;
++	for(int k = m_TeleCheckpoint - 1; k >= 0; k--)
++	{
++		const std::vector<vec2> &vOutputs = Collision()->TeleCheckOuts(k);
++		if(!vOutputs.empty())
++		{
++			m_Core.m_Pos = vOutputs[GameWorld()->m_Core.RandomOr0(vOutputs.size())];
++			ResetHook();
++			return true;
++		}
++	}
++	vec2 SpawnPos;
++	if(GameServer()->m_pController->CanSpawn(m_pPlayer->GetTeam(), &SpawnPos, GetPlayer()->GetCid()))
++	{
++		m_Core.m_Pos = SpawnPos;
++		ResetHook();
++	}
++	return true;
++}
++
+ void CCharacter::HandleTiles(int Index)
+ {
+ 	int MapIndex = Index;
+@@ -1639,6 +1785,8 @@ void CCharacter::HandleTiles(int Index)
+ 	GameServer()->m_pController->HandleCharacterTiles(this, Index);
+ 	if(!m_Alive)
+ 		return;
++	if(HandleDdxLegacyGameTile(MapIndex))
++		return;
+ 
+ 	// freeze
+ 	if(((m_TileIndex == TILE_FREEZE) || (m_TileFIndex == TILE_FREEZE)) && !m_Core.m_Super && !m_Core.m_Invincible && !m_Core.m_DeepFrozen)
+@@ -1996,6 +2144,9 @@ void CCharacter::HandleTiles(int Index)
+ 		m_LastBonus = false;
+ 	}
+ 
++	if(HandleDdxLegacyTeleporter(MapIndex))
++		return;
++
+ 	int z = Collision()->IsTeleport(MapIndex);
+ 	if(!g_Config.m_SvOldTeleportHook && !g_Config.m_SvOldTeleportWeapons && z && !Collision()->TeleOuts(z - 1).empty())
+ 	{
+diff --git a/src/game/server/entities/character.h b/src/game/server/entities/character.h
+index 31ec7b0ea..16ab40b27 100644
+--- a/src/game/server/entities/character.h
++++ b/src/game/server/entities/character.h
+@@ -174,6 +174,8 @@ private:
+ 	void SnapCharacter(int SnappingClient, int Id);
+ 	static bool IsSwitchActiveCb(unsigned char Number, void *pUser);
+ 	void SetTimeCheckpoint(int TimeCheckpoint);
++	bool HandleDdxLegacyGameTile(int MapIndex);
++	bool HandleDdxLegacyTeleporter(int MapIndex);
+ 	void HandleTiles(int Index);
+ 	float m_Time;
+ 	int m_LastBroadcast;
+@@ -193,6 +195,7 @@ private:
+ public:
+ 	CGameTeams *Teams() { return m_pTeams; }
+ 	void SetTeams(CGameTeams *pTeams);
++	void ResetDdxLegacyTeleportState() { m_DdxLastCombinedTeleporter = 0; }
+ 	bool TrySetRescue(int RescueMode);
+ 
+ 	void FillAntibot(CAntibotCharacterData *pData);
+@@ -233,6 +236,7 @@ public:
+ 	bool m_LastRefillJumps;
+ 	bool m_LastPenalty;
+ 	bool m_LastBonus;
++	int m_DdxLastCombinedTeleporter;
+ 	vec2 m_TeleGunPos;
+ 	bool m_TeleGunTeleport;
+ 	bool m_IsBlueTeleGunTeleport;
+diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
+index 0a2d53e6d..39e54d2d5 100644
+--- a/src/game/server/gamecontext.cpp
++++ b/src/game/server/gamecontext.cpp
+@@ -4772,6 +4772,19 @@ void CGameContext::OnInit(const void *pPersistentData)
+ 	Console()->ExecuteFile(g_Config.m_SvResetFile, IConsole::CLIENT_ID_UNSPECIFIED);
+ 
+ 	LoadMapSettings();
++	const DdxLegacyTeleport::CProfile DdxLegacyProfile = DdxLegacyTeleport::ResolveProfile(g_Config.m_SvDdxTeleFamily, Map()->Size(), Map()->Sha256());
++	m_Collision.ConfigureDdxLegacy(DdxLegacyProfile);
++	char aDdxMapName[128];
++	str_copy(aDdxMapName, Map()->BaseName());
++	str_sanitize_cc(aDdxMapName);
++	if(DdxLegacyTeleport::IsKnownTeleSelector(g_Config.m_SvDdxTeleFamily))
++	{
++		dbg_msg("ddx-legacy", "map='%s' game=%s tele=%s", aDdxMapName, DdxLegacyTeleport::GameLayerName(DdxLegacyProfile.m_GameLayer), DdxLegacyTeleport::TeleLayerName(DdxLegacyProfile.m_TeleLayer));
++	}
++	else
++	{
++		dbg_msg("ddx-legacy", "map='%s' game=%s tele=modern rejected_selector=%d", aDdxMapName, DdxLegacyTeleport::GameLayerName(DdxLegacyProfile.m_GameLayer), g_Config.m_SvDdxTeleFamily);
++	}
+ 
+ 	m_pConfigManager->SetGameSettingsReadOnly(true);
+ 	if(g_Config.m_SvMapVoteCatalog)
+@@ -4889,6 +4902,7 @@ void CGameContext::CreateAllEntities(bool Initial)
+ 	const CTile *pTiles = m_Collision.GameLayer();
+ 	const CTile *pFront = m_Collision.FrontLayer();
+ 	const CSwitchTile *pSwitch = m_Collision.SwitchLayer();
++	const bool DdxLegacy05GameLayer = m_Collision.DdxLegacyProfile().m_GameLayer == DdxLegacyTeleport::EGameLayer::TEEWORLDS_05;
+ 
+ 	for(int y = 0; y < m_Collision.GetHeight(); y++)
+ 	{
+@@ -4898,7 +4912,8 @@ void CGameContext::CreateAllEntities(bool Initial)
+ 
+ 			// Game layer
+ 			{
+-				const int GameIndex = pTiles[Index].m_Index;
++				const int RawGameIndex = pTiles[Index].m_Index;
++				const int GameIndex = DdxLegacy05GameLayer && RawGameIndex < ENTITY_OFFSET ? 0 : RawGameIndex;
+ 				if(GameIndex == TILE_OLDLASER)
+ 				{
+ 					g_Config.m_SvOldLaser = 1;
+@@ -4932,7 +4947,8 @@ void CGameContext::CreateAllEntities(bool Initial)
+ 
+ 			if(pFront)
+ 			{
+-				const int FrontIndex = pFront[Index].m_Index;
++				const int RawFrontIndex = pFront[Index].m_Index;
++				const int FrontIndex = DdxLegacy05GameLayer && RawFrontIndex < ENTITY_OFFSET ? 0 : RawFrontIndex;
+ 				if(FrontIndex == TILE_OLDLASER)
+ 				{
+ 					g_Config.m_SvOldLaser = 1;
+diff --git a/src/game/server/teams.cpp b/src/game/server/teams.cpp
+index 0c6a5f20c..ca69a7cee 100644
+--- a/src/game/server/teams.cpp
++++ b/src/game/server/teams.cpp
+@@ -480,6 +480,8 @@ void CGameTeams::SetForceCharacterTeam(int ClientId, int Team)
+ 
+ 	if(OldTeam != Team)
+ 	{
++		if(CCharacter *pCharacter = Character(ClientId))
++			pCharacter->ResetDdxLegacyTeleportState();
+ 		for(int LoopClientId = 0; LoopClientId < MAX_CLIENTS; ++LoopClientId)
+ 			if(GetPlayer(LoopClientId))
+ 				SendTeamsState(LoopClientId);
+diff --git a/src/test/ddx_legacy_teleport_test.cpp b/src/test/ddx_legacy_teleport_test.cpp
+new file mode 100644
+index 000000000..ef4492763
+--- /dev/null
++++ b/src/test/ddx_legacy_teleport_test.cpp
+@@ -0,0 +1,147 @@
++#include <gtest/gtest.h>
++
++#include <base/hash.h>
++
++#include <game/ddx_legacy_teleport.h>
++
++#include <climits>
++
++using namespace DdxLegacyTeleport;
++
++TEST(DdxLegacyTeleport, SelectorsFailClosedWithoutClampingIntoAProfile)
++{
++	EXPECT_FALSE(IsKnownTeleSelector(INT_MIN));
++	EXPECT_FALSE(IsKnownTeleSelector(-1));
++	EXPECT_TRUE(IsKnownTeleSelector(0));
++	EXPECT_TRUE(IsKnownTeleSelector(1));
++	EXPECT_TRUE(IsKnownTeleSelector(2));
++	EXPECT_TRUE(IsKnownTeleSelector(3));
++	EXPECT_FALSE(IsKnownTeleSelector(4));
++	EXPECT_FALSE(IsKnownTeleSelector(INT_MAX));
++	EXPECT_EQ(TeleLayerFromSelector(INT_MIN), ETeleLayer::MODERN);
++	EXPECT_EQ(TeleLayerFromSelector(-1), ETeleLayer::MODERN);
++	EXPECT_EQ(TeleLayerFromSelector(0), ETeleLayer::MODERN);
++	EXPECT_EQ(TeleLayerFromSelector(1), ETeleLayer::FDDRACE_93_94);
++	EXPECT_EQ(TeleLayerFromSelector(2), ETeleLayer::FDDRACE_95_94);
++	EXPECT_EQ(TeleLayerFromSelector(3), ETeleLayer::XXL_STANDARD);
++	EXPECT_EQ(TeleLayerFromSelector(4), ETeleLayer::MODERN);
++	EXPECT_EQ(TeleLayerFromSelector(INT_MAX), ETeleLayer::MODERN);
++}
++
++TEST(DdxLegacyTeleport, ExactMapRequiresSizeAndFullSha256)
++{
++	SHA256_DIGEST Exact;
++	ASSERT_EQ(sha256_from_str(&Exact, "8f4a614b00f319694d877e3ee24ee3bd59cbe549a8eab2670db9ec0504a60ccf"), 0);
++	EXPECT_TRUE(IsLegacy05Map(107225, Exact));
++	EXPECT_FALSE(IsLegacy05Map(107224, Exact));
++
++	SHA256_DIGEST Different = Exact;
++	Different.data[SHA256_DIGEST_LENGTH - 1] ^= 1;
++	EXPECT_FALSE(IsLegacy05Map(107225, Different));
++	EXPECT_EQ(ResolveProfile(0, 107225, Different).m_GameLayer, EGameLayer::MODERN);
++
++	Different = Exact;
++	Different.data[0] ^= 1;
++	EXPECT_FALSE(IsLegacy05Map(107225, Different));
++	EXPECT_EQ(ResolveProfile(1, LEGACY_05_MAP_SIZE, Exact), (CProfile{EGameLayer::TEEWORLDS_05, ETeleLayer::FDDRACE_93_94}));
++	EXPECT_EQ(ResolveProfile(INT_MAX, LEGACY_05_MAP_SIZE, Exact), (CProfile{EGameLayer::TEEWORLDS_05, ETeleLayer::MODERN}));
++}
++
++TEST(DdxLegacyTeleport, ProfileResolutionDoesNotRetainPriorMapState)
++{
++	const CProfile Legacy = ResolveProfile(0, LEGACY_05_MAP_SIZE, LEGACY_05_MAP_SHA256);
++	const CProfile Modern = ResolveProfile(0, 0, SHA256_DIGEST{});
++	const CProfile LegacyAgain = ResolveProfile(0, LEGACY_05_MAP_SIZE, LEGACY_05_MAP_SHA256);
++	EXPECT_EQ(Legacy.m_GameLayer, EGameLayer::TEEWORLDS_05);
++	EXPECT_EQ(Modern, CProfile{});
++	EXPECT_EQ(LegacyAgain, Legacy);
++}
++
++TEST(DdxLegacyTeleport, Legacy05DecodingKeepsModernMeaningsOutOfTheExactProfile)
++{
++	EXPECT_EQ(ModernGameTile(EGameLayer::MODERN, 71), 71);
++	EXPECT_EQ(ModernGameTile(EGameLayer::TEEWORLDS_05, 1), 1);
++	EXPECT_EQ(ModernGameTile(EGameLayer::TEEWORLDS_05, 33), 33);
++	EXPECT_EQ(ModernGameTile(EGameLayer::TEEWORLDS_05, 71), 0);
++	EXPECT_TRUE(ConsumesLegacy05GameTile(10));
++	EXPECT_EQ(Legacy05Boost(10).m_X, 0);
++	EXPECT_EQ(Legacy05TeleportOutNumber(189), 94);
++	EXPECT_EQ(Legacy05TeleportInNumber(190), 94);
++	EXPECT_EQ(Legacy05TeleportOutNumber(190), 0);
++	EXPECT_EQ(Legacy05TeleportInNumber(191), 0);
++}
++
++TEST(DdxLegacyTeleport, Legacy05PairedTilesHaveOnePolarityAndMatchingNumbers)
++{
++	EXPECT_EQ(Legacy05TeleportOutNumber(34), 0);
++	EXPECT_EQ(Legacy05TeleportInNumber(35), 0);
++	for(int Output = 35; Output <= 189; Output += 2)
++	{
++		const int Input = Output + 1;
++		EXPECT_EQ(Legacy05TeleportOutNumber(Output), Output >> 1);
++		EXPECT_EQ(Legacy05TeleportInNumber(Output), 0);
++		EXPECT_EQ(Legacy05TeleportInNumber(Input), Output >> 1);
++		EXPECT_EQ(Legacy05TeleportOutNumber(Input), 0);
++	}
++	EXPECT_EQ(Legacy05TeleportInNumber(190), 94);
++	EXPECT_EQ(Legacy05TeleportOutNumber(191), 0);
++}
++
++TEST(DdxLegacyTeleport, Legacy05BoostsMatchTheRecoveredRacePrimitives)
++{
++	EXPECT_EQ(Legacy05Boost(5), (CLegacy05Boost{-3, 0, false}));
++	EXPECT_EQ(Legacy05Boost(6), (CLegacy05Boost{3, 0, false}));
++	EXPECT_EQ(Legacy05Boost(8), (CLegacy05Boost{0, -2, false}));
++	EXPECT_EQ(Legacy05Boost(12), (CLegacy05Boost{-15, 0, false}));
++	EXPECT_EQ(Legacy05Boost(13), (CLegacy05Boost{15, 0, false}));
++	EXPECT_EQ(Legacy05Boost(14), (CLegacy05Boost{0, 15, false}));
++	EXPECT_EQ(Legacy05Boost(15), (CLegacy05Boost{0, -15, false}));
++	EXPECT_EQ(Legacy05Boost(21), (CLegacy05Boost{-3, 0, true}));
++	EXPECT_EQ(Legacy05Boost(22), (CLegacy05Boost{3, 0, true}));
++	EXPECT_EQ(Legacy05Boost(23), (CLegacy05Boost{0, 2, true}));
++	EXPECT_EQ(Legacy05Boost(7), (CLegacy05Boost{}));
++	EXPECT_EQ(Legacy05Boost(24), (CLegacy05Boost{}));
++	EXPECT_EQ(Legacy05Boost(9), (CLegacy05Boost{}));
++	EXPECT_EQ(Legacy05Boost(10), (CLegacy05Boost{}));
++	EXPECT_EQ(Legacy05Boost(11), (CLegacy05Boost{}));
++}
++
++TEST(DdxLegacyTeleport, CombinedTypesAreProfileSpecific)
++{
++	EXPECT_TRUE(IsCombinedNormal(ETeleLayer::FDDRACE_93_94, 93));
++	EXPECT_FALSE(IsCombinedNormal(ETeleLayer::FDDRACE_93_94, 95));
++	EXPECT_TRUE(IsCombinedNormal(ETeleLayer::FDDRACE_95_94, 95));
++	EXPECT_TRUE(IsCombinedEvil(ETeleLayer::FDDRACE_93_94, 94));
++	EXPECT_TRUE(IsCombinedEvil(ETeleLayer::FDDRACE_95_94, 94));
++	EXPECT_FALSE(IsCombinedEvil(ETeleLayer::MODERN, 94));
++}
++
++TEST(DdxLegacyTeleport, CombinedSelectionExcludesTheCurrentOutputWithoutRetries)
++{
++	EXPECT_EQ(AlternativeOutputIndex(0, 0, 0), INVALID_OUTPUT);
++	EXPECT_EQ(AlternativeOutputIndex(1, 0, 0), INVALID_OUTPUT);
++	EXPECT_EQ(AlternativeOutputIndex(3, 1, 0), 0u);
++	EXPECT_EQ(AlternativeOutputIndex(3, 1, 1), 2u);
++	EXPECT_EQ(AlternativeOutputIndex(3, 3, 0), INVALID_OUTPUT);
++	EXPECT_EQ(AlternativeOutputIndex(3, 1, 2), INVALID_OUTPUT);
++	for(size_t Count = 2; Count <= 64; Count++)
++	{
++		for(size_t Current = 0; Current < Count; Current++)
++		{
++			for(size_t Draw = 0; Draw < Count - 1; Draw++)
++			{
++				const size_t Output = AlternativeOutputIndex(Count, Current, Draw);
++				EXPECT_LT(Output, Count);
++				EXPECT_NE(Output, Current);
++			}
++		}
++	}
++}
++
++TEST(DdxLegacyTeleport, CombinedEntryClearsWhenTheCharacterLeavesItsNumber)
++{
++	EXPECT_EQ(RetainCombinedEntry(7, 7, 0), 7);
++	EXPECT_EQ(RetainCombinedEntry(7, 0, 7), 7);
++	EXPECT_EQ(RetainCombinedEntry(7, 8, 0), 0);
++	EXPECT_EQ(RetainCombinedEntry(7, 0, 0), 0);
++}
+-- 
+2.53.0
+
