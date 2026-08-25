@@ -11,6 +11,8 @@ code automatically. Only the numbered DDX patch stack is executable.
 - Family `2` is TBlock's conflicting raw tile layout.
 - Family `3` is the ftk XXLDDRace extension, including its per-character tune
   and rescue-control tiles.
+- Family `4` is the verified Teeworlds 0.5/AiP hybrid layout: legacy base and
+  paired-teleport game tiles below `176`, plus canonical XXL extras.
 - `sv_ddx_tele_family 0` disables combined input/output teleport semantics.
 - Tele family `1` is the fokkonaut/xuilan `93` normal, `94` evil encoding.
 - Tele family `2` is the nameless/uvi `95` normal, `94` evil encoding.
@@ -18,6 +20,29 @@ code automatically. Only the numbered DDX patch stack is executable.
   historical-looking IDs and the effective configured family.
 - No automatic inference reinterprets raw `190/191`, which modern DDNet uses
   for entity-overlay markers, or the conflicting TBlock/ftk ranges.
+
+## Teeworlds 0.5 AiP hybrid layout
+
+DDX selects family `4` automatically only when the map has size 107225 and
+SHA-256
+`8f4a614b00f319694d877e3ee24ee3bd59cbe549a8eab2670db9ec0504a60ccf`.
+The map is loaded as
+`Aip_Race_extreme_by_Qwer534--8f4a614b00f319694d877e3ee24ee3bd59cbe549a8eab2670db9ec0504a60ccf`.
+
+- IDs `5–8` are the original low-strength directional boosters.
+- IDs `9` and `11` retain freeze and unfreeze behavior.
+- ID `10` is the original kick zone.
+- IDs `12–15` are the original high-strength directional boosters.
+- IDs `21–24` apply the low-strength boost and freeze together.
+- Odd IDs `35–175` are teleport outputs and even IDs `36–174` are their
+  paired inputs. Entering an input preserves velocity and weapons and retracts
+  the tee's hook, matching the recovered 0.5 source.
+- IDs `176–191` use the canonical XXL table below.
+
+All other maps default this game-scoped selector to zero. Operators may select
+family `4` explicitly only after identifying the map's source family. DDX does
+not infer this family from tile values because the raw ranges conflict with
+modern DDRace checkpoints, stoppers, and control tiles.
 
 ## Canonical XXLDDRace and ftk layout
 
