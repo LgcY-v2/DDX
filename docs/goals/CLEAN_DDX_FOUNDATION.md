@@ -225,7 +225,7 @@ Preserve all of these throughout the work:
   client limits, registration, SQLite state, logs, FIFO, and dashboard ID;
 - DDX owner/admin/moderator/helper hierarchy and `sv_test_cmds 0`;
 - `aip`, grenade bounces, target `super`/`unsuper`, player handoffs, map archive
-  browsing, search collections, random choices, cache bounds, and cooldown;
+  browsing, owner-managed search collections, random choices, cache bounds, and single-writer extraction;
 - AiP-Race's empty vote menu, disabled `/map`, fixed map, and lack of archive
   dependencies;
 - independent deployment binaries and mutable runtime paths;

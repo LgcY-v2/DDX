@@ -18,7 +18,7 @@ The numbered patch stack is the authority for this inventory:
 - bounded, one-use admission grants for same-address DDNet player handoffs;
 - a server-side map browser for DDRace, Gores, and the historical archive;
 - archive search collections, random map choices, verified extraction, bounded
-  caching, and a map-load cooldown;
+  caching, and single-writer extraction;
 - source-proven compatibility for legacy teleport encodings needed to test old
   maps, including the verified Teeworlds 0.5 paired game-layer encoding and the
   two known F-DDrace combined input/output encodings, plus recovered XXL
@@ -128,9 +128,15 @@ applies to future shots and survives map changes.
 
 ## Archive
 
-`/search` creates persistent vote-menu collections. Each collection has its
-own random option. Empty maps are skipped and filename aliases do not add extra
-weight.
+Owner RCON users can create persistent vote-menu collections with `/search`.
+Everyone can browse the collections and call map votes. Owners also see
+`Manage collections` and `Delete this collection` controls under Call vote.
+Deletion has a review page and removes only the saved search; archive maps stay
+available. Collection IDs are stable, so owners can also use
+`list_map_collections`, `delete_map_collection <id>`, or the deliberately
+explicit bulk command `clear_map_searches confirm` in RCON. Each collection has
+its own random option. Empty maps are skipped and filename aliases do not add
+extra weight.
 
 Archive notes and checksums are in `archive/README.md`. The preparation script
 is `scripts/prepare-map-archive.py`.

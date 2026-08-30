@@ -49,6 +49,12 @@ grant owner identity or owner-only commands.
 The owner rank exists only inside the server. Network snapshots clamp it to
 DDNet's public admin value so stock clients remain compatible.
 
+On DDX Testing, owners also control persistent archive collections. `/search`,
+`list_map_collections`, `delete_map_collection`, and
+`clear_map_searches confirm` are owner-only. The Call vote menu exposes the
+same single-collection deletion path only to authenticated owners and requires
+a separate review page before deletion.
+
 ## Adding DDX commands
 
 Register an owner-only command with `CMDFLAG_OWNER`. Do not compare passwords,
