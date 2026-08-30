@@ -224,7 +224,7 @@ Preserve all of these throughout the work:
 - each server's current map, password behavior, RCON credentials, vote policy,
   client limits, registration, SQLite state, logs, FIFO, and dashboard ID;
 - DDX owner/admin/moderator/helper hierarchy and `sv_test_cmds 0`;
-- `aip`, grenade bounces, target `super`/`unsuper`, player handoffs, map archive
+- `aip`, grenade bounces, sudo spectator movement, target `super`/`unsuper`, player handoffs, map archive
   browsing, owner-managed search collections, random choices, cache bounds, and single-writer extraction;
 - AiP-Race's empty vote menu, disabled `/map`, fixed map, and lack of archive
   dependencies;
@@ -368,7 +368,7 @@ At minimum cover:
 - character death, respawn, team change, reconnect, map change, shutdown, and
   interrupted load;
 - modern DDRace maps and all ordinary DDNet tile validators;
-- accepted DDX commands, owner authority, map archive, cache, handoff, AiP, and
+- accepted DDX commands, owner authority, sudo spectator movement, map archive, cache, handoff, AiP, and
   grenade behavior;
 - sanitized deployment manifests and scripts.
 

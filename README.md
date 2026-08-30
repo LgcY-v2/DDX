@@ -12,6 +12,8 @@ The numbered patch stack is the authority for this inventory:
 - the `DDX` gametype name;
 - an owner RCON role above admin, including owner-only commands and test-command
   access while `sv_test_cmds` remains disabled for lower roles;
+- owner sudo controls that redirect directional RCON movement to the directly
+  spectated player;
 - target arguments for `super` and `unsuper` with rank-aware authorization;
 - `aip` rapid fire with an owner-selected delay and persistent player setting;
 - owner-controlled grenade bounces for future projectiles;
@@ -100,6 +102,21 @@ rcon_login owner <password>
 
 `sv_test_cmds` stays off. Owner can use test commands; normal admin cannot.
 Passwords stay in ignored `server/secrets.cfg`.
+
+Sudo spectator controls:
+
+```text
+sudo
+```
+
+`sudo` toggles for the connected owner session and survives map changes. It
+resets on logout, loss of owner authentication, disconnect, or server restart.
+While enabled, `up`, `down`, `left`, and `right` move the player the owner
+directly spectates through full spectator or pause/spec mode. Freeview and
+ordinary play keep the commands on the owner's character. A selected player
+without a live character is not moved, and the command does not fall back to
+the owner. Redirected movement keeps the existing velocity reset and cheated
+race-state behavior.
 
 AIP examples:
 

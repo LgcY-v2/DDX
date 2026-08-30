@@ -55,6 +55,12 @@ On DDX Testing, owners also control persistent archive collections. `/search`,
 same single-collection deletion path only to authenticated owners and requires
 a separate review page before deletion.
 
+Owners can toggle `sudo` to redirect `up`, `down`, `left`, and `right` to the
+player they directly spectate. The connected player owns the toggle; it
+survives map changes, clears when owner authentication ends, and never stores a
+target. Each movement command resolves the current spectator state and uses the
+shared client-management authorization before moving another player.
+
 ## Adding DDX commands
 
 Register an owner-only command with `CMDFLAG_OWNER`. Do not compare passwords,
@@ -74,4 +80,6 @@ Before deploying a DDX build, verify that:
 - owner can execute test and owner-only commands;
 - admin cannot target an owner through player, address, vote, kick, or ban paths;
 - admin cannot create, change, remove, or grant owner credentials;
+- sudo movement uses only a current, manageable, directly spectated player and
+  resets when owner authentication ends;
 - the public snapshot never exposes an auth value above `AUTHED_ADMIN`.

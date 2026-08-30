@@ -1,0 +1,302 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LgcY-v2 <menhardandre@gmail.com>
+Date: Sun, 30 Aug 2026 00:00:00 +0000
+Subject: [PATCH 13/13] feat: add sudo spectator controls
+
+- keep one per-owner toggle across map changes
+- resolve the current spectator target for every movement command
+- reset on auth loss and fail closed for unavailable targets
+---
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 829b9c3..59d5039 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2948,6 +2948,7 @@ if(SERVER)
+     ddracecommands.cpp
+     ddx_grenade_bounce.h
+     ddx_rapid_fire.h
++    ddx_sudo.h
+     entities/character.cpp
+     entities/character.h
+     entities/door.cpp
+@@ -3242,6 +3243,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
+     ddx_grenade_bounce_test.cpp
+     ddx_legacy_teleport_test.cpp
+     ddx_rapid_fire_test.cpp
++    ddx_sudo_test.cpp
+     editor_test.cpp
+     fs_test.cpp
+     gameworld_test.cpp
+diff --git a/src/game/server/ddracecommands.cpp b/src/game/server/ddracecommands.cpp
+index 2f9e0a9..67a5986 100644
+--- a/src/game/server/ddracecommands.cpp
++++ b/src/game/server/ddracecommands.cpp
+@@ -1,11 +1,13 @@
+ /* (c) Shereef Marzouk. See "licence DDRace.txt" and the readme.txt in the root of the distribution for more information. */
++#include "ddx_sudo.h"
+ #include "gamecontext.h"
+ 
+ #include <base/io.h>
+ #include <base/log.h>
+ #include <base/time.h>
+ 
+ #include <engine/antibot.h>
++#include <engine/server/ddx_auth.h>
+ #include <engine/shared/config.h>
+ 
+ #include <game/mapitems.h>
+@@ -22,7 +25,7 @@ void CGameContext::ConGoLeft(IConsole::IResult *pResult, void *pUserData)
+ 
+ 	if(!CheckClientId(pResult->m_ClientId))
+ 		return;
+-	pSelf->MoveCharacter(pResult->m_ClientId, -1 * Tiles, 0);
++	pSelf->MoveCharacterByDirection(pResult->m_ClientId, -1 * Tiles, 0);
+ }
+ 
+ void CGameContext::ConGoRight(IConsole::IResult *pResult, void *pUserData)
+@@ -32,7 +35,7 @@ void CGameContext::ConGoRight(IConsole::IResult *pResult, void *pUserData)
+ 
+ 	if(!CheckClientId(pResult->m_ClientId))
+ 		return;
+-	pSelf->MoveCharacter(pResult->m_ClientId, Tiles, 0);
++	pSelf->MoveCharacterByDirection(pResult->m_ClientId, Tiles, 0);
+ }
+ 
+ void CGameContext::ConGoDown(IConsole::IResult *pResult, void *pUserData)
+@@ -42,7 +45,7 @@ void CGameContext::ConGoDown(IConsole::IResult *pResult, void *pUserData)
+ 
+ 	if(!CheckClientId(pResult->m_ClientId))
+ 		return;
+-	pSelf->MoveCharacter(pResult->m_ClientId, 0, Tiles);
++	pSelf->MoveCharacterByDirection(pResult->m_ClientId, 0, Tiles);
+ }
+ 
+ void CGameContext::ConGoUp(IConsole::IResult *pResult, void *pUserData)
+@@ -52,7 +55,7 @@ void CGameContext::ConGoUp(IConsole::IResult *pResult, void *pUserData)
+ 
+ 	if(!CheckClientId(pResult->m_ClientId))
+ 		return;
+-	pSelf->MoveCharacter(pResult->m_ClientId, 0, -1 * Tiles);
++	pSelf->MoveCharacterByDirection(pResult->m_ClientId, 0, -1 * Tiles);
+ }
+ 
+ void CGameContext::ConMove(IConsole::IResult *pResult, void *pUserData)
+@@ -85,6 +88,57 @@ void CGameContext::MoveCharacter(int ClientId, int X, int Y, bool Raw)
+ 	pChr->m_DDRaceState = ERaceState::CHEATED;
+ }
+ 
++void CGameContext::MoveCharacterByDirection(int ClientId, int X, int Y)
++{
++	if(!CheckClientId(ClientId) || !m_apPlayers[ClientId])
++		return;
++
++	CPlayer *pPlayer = m_apPlayers[ClientId];
++	const int SpectatorId = pPlayer->SpectatorId();
++	const bool HasDirectTarget = SpectatorId >= 0;
++	const bool TargetIdValid = CheckClientId(SpectatorId);
++	const DdxSudo::EMovementTarget Target = DdxSudo::ResolveMovementTarget(
++		pPlayer->m_SudoSpectatorControl,
++		DdxAuth::IsOwner(Server()->GetAuthedState(ClientId)),
++		pPlayer->GetTeam() == TEAM_SPECTATORS || pPlayer->IsPaused(),
++		HasDirectTarget,
++		TargetIdValid && Server()->CanManageClient(ClientId, SpectatorId),
++		TargetIdValid && GetPlayerChar(SpectatorId) != nullptr);
++
++	switch(Target)
++	{
++	case DdxSudo::EMovementTarget::SELF:
++		MoveCharacter(ClientId, X, Y);
++		break;
++	case DdxSudo::EMovementTarget::SPECTATED_PLAYER:
++		MoveCharacter(SpectatorId, X, Y);
++		break;
++	case DdxSudo::EMovementTarget::NONE:
++		break;
++	}
++}
++
++void CGameContext::ConSudo(IConsole::IResult *pResult, void *pUserData)
++{
++	CGameContext *pSelf = static_cast<CGameContext *>(pUserData);
++	const int ClientId = pResult->m_ClientId;
++	if(!CheckClientId(ClientId) || !pSelf->m_apPlayers[ClientId] ||
++		!DdxAuth::IsOwner(pSelf->Server()->GetAuthedState(ClientId)))
++	{
++		pSelf->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "sudo", "Sudo requires a connected owner client.");
++		return;
++	}
++
++	CPlayer *pPlayer = pSelf->m_apPlayers[ClientId];
++	pPlayer->m_SudoSpectatorControl = !pPlayer->m_SudoSpectatorControl;
++	pSelf->Console()->Print(
++		IConsole::OUTPUT_LEVEL_STANDARD,
++		"sudo",
++		pPlayer->m_SudoSpectatorControl ?
++			"Sudo enabled: up/down/left/right move the player you directly spectate; otherwise they move you." :
++			"Sudo disabled: up/down/left/right move you.");
++}
++
+ void CGameContext::ConKillPlayer(IConsole::IResult *pResult, void *pUserData)
+ {
+ 	CGameContext *pSelf = (CGameContext *)pUserData;
+diff --git b/src/game/server/ddx_sudo.h b/src/game/server/ddx_sudo.h
+new file mode 100644
+index 0000000..d9b76b5
+--- /dev/null
++++ b/src/game/server/ddx_sudo.h
+@@ -0,0 +1,29 @@
++#ifndef GAME_SERVER_DDX_SUDO_H
++#define GAME_SERVER_DDX_SUDO_H
++
++namespace DdxSudo
++{
++	enum class EMovementTarget
++	{
++		SELF,
++		SPECTATED_PLAYER,
++		NONE,
++	};
++
++	constexpr EMovementTarget ResolveMovementTarget(
++		bool Enabled,
++		bool IsOwner,
++		bool IsSpectating,
++		bool HasDirectTarget,
++		bool CanManageTarget,
++		bool TargetHasCharacter)
++	{
++		if(!Enabled || !IsOwner || !IsSpectating || !HasDirectTarget)
++			return EMovementTarget::SELF;
++		if(!CanManageTarget || !TargetHasCharacter)
++			return EMovementTarget::NONE;
++		return EMovementTarget::SPECTATED_PLAYER;
++	}
++} // namespace DdxSudo
++
++#endif // GAME_SERVER_DDX_SUDO_H
+diff --git a/src/game/server/gamecontext.cpp b/src/game/server/gamecontext.cpp
+index ada69fb..e304e71 100644
+--- a/src/game/server/gamecontext.cpp
++++ b/src/game/server/gamecontext.cpp
+@@ -2046,6 +2046,7 @@ bool CGameContext::OnClientDataPersist(int ClientId, void *pData)
+ 	pPersistent->m_MapVoteSort = static_cast<int>(Page.m_Sort);
+ 	pPersistent->m_AipDelayTicks = m_apPlayers[ClientId]->m_AipDelayTicks;
+ 	pPersistent->m_GrenadeBounces = m_apPlayers[ClientId]->m_GrenadeBounces;
++	pPersistent->m_SudoSpectatorControl = m_apPlayers[ClientId]->m_SudoSpectatorControl;
+ 	return true;
+ }
+ 
+@@ -2105,6 +2106,8 @@ void CGameContext::OnClientConnected(int ClientId, void *pData)
+ 		m_apPlayers[ClientId]->m_MapVoteSort = static_cast<int>(MapVotePage.m_Sort);
+ 		m_apPlayers[ClientId]->m_AipDelayTicks = pPersistentData->m_AipDelayTicks;
+ 		m_apPlayers[ClientId]->m_GrenadeBounces = pPersistentData->m_GrenadeBounces;
++		m_apPlayers[ClientId]->m_SudoSpectatorControl =
++			pPersistentData->m_SudoSpectatorControl && DdxAuth::IsOwner(Server()->GetAuthedState(ClientId));
+ 	}
+ 	if(m_MapVoteCatalog.Active())
+ 		NavigateMapVotes(ClientId, MapVotePage);
+@@ -4595,6 +4598,7 @@ void CGameContext::RegisterDDRaceCommands()
+ 	Console()->Register("undeep", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnDeep, this, "Puts you out of deep freeze");
+ 	Console()->Register("livefreeze", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConLiveFreeze, this, "Makes you live frozen");
+ 	Console()->Register("unlivefreeze", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConUnLiveFreeze, this, "Puts you out of live freeze");
++	Console()->Register("sudo", "", CFGFLAG_SERVER | CMDFLAG_OWNER, ConSudo, this, "Toggle spectated-player movement for up/down/left/right (owner only)");
+ 	Console()->Register("left", "?i[tiles]", CFGFLAG_SERVER | CMDFLAG_TEST, ConGoLeft, this, "Makes you move 1 tile left");
+ 	Console()->Register("right", "?i[tiles]", CFGFLAG_SERVER | CMDFLAG_TEST, ConGoRight, this, "Makes you move 1 tile right");
+ 	Console()->Register("up", "?i[tiles]", CFGFLAG_SERVER | CMDFLAG_TEST, ConGoUp, this, "Makes you move 1 tile up");
+@@ -5415,6 +5419,9 @@ IGameServer *CreateGameServer() { return new CGameContext; }
+ 
+ void CGameContext::OnSetAuthed(int ClientId, int Level)
+ {
++	if(m_apPlayers[ClientId] && !DdxAuth::IsOwner(Level))
++		m_apPlayers[ClientId]->m_SudoSpectatorControl = false;
++
+ 	if(m_apPlayers[ClientId] && m_VoteCloseTime && Level != AUTHED_NO)
+ 	{
+ 		char aBuf[512];
+diff --git a/src/game/server/gamecontext.h b/src/game/server/gamecontext.h
+index 7caa003..ad48408 100644
+--- a/src/game/server/gamecontext.h
++++ b/src/game/server/gamecontext.h
+@@ -5,8 +5,8 @@
+ 
+ #include "eventhandler.h"
+ #include "gameworld.h"
+-#include "map_vote_catalog.h"
+ #include "map_archive.h"
++#include "map_vote_catalog.h"
+ #include "teehistorian.h"
+ 
+ #include <base/types.h>
+@@ -211,6 +211,7 @@ class CGameContext : public IGameServer
+ 		int m_MapVoteSort;
+ 		int m_AipDelayTicks;
+ 		int m_GrenadeBounces;
++		bool m_SudoSpectatorControl;
+ 	};
+ 
+ public:
+@@ -500,6 +501,8 @@ private:
+ 	static void ConRemoveWeapon(IConsole::IResult *pResult, void *pUserData);
+ 	void ModifyWeapons(IConsole::IResult *pResult, void *pUserData, int Weapon, bool Remove);
+ 	void MoveCharacter(int ClientId, int X, int Y, bool Raw = false);
++	void MoveCharacterByDirection(int ClientId, int X, int Y);
++	static void ConSudo(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConGoLeft(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConGoRight(IConsole::IResult *pResult, void *pUserData);
+ 	static void ConGoUp(IConsole::IResult *pResult, void *pUserData);
+diff --git a/src/game/server/player.cpp b/src/game/server/player.cpp
+index 15392dd..47f906f 100644
+--- a/src/game/server/player.cpp
++++ b/src/game/server/player.cpp
+@@ -127,6 +127,7 @@ void CPlayer::Reset()
+ 	m_NinjaJetpack = false;
+ 	m_AipDelayTicks = 0;
+ 	m_GrenadeBounces = 0;
++	m_SudoSpectatorControl = false;
+ 
+ 	m_Paused = PAUSE_NONE;
+ 	m_DND = false;
+diff --git a/src/game/server/player.h b/src/game/server/player.h
+index cb27530..cb214ed 100644
+--- a/src/game/server/player.h
++++ b/src/game/server/player.h
+@@ -192,6 +192,7 @@ public:
+ 	bool m_NinjaJetpack;
+ 	int m_AipDelayTicks;
+ 	int m_GrenadeBounces;
++	bool m_SudoSpectatorControl;
+ 
+ 	// camera info is used sparingly for converting aim target to absolute world coordinates
+ 	class CCameraInfo
+diff --git b/src/test/ddx_sudo_test.cpp b/src/test/ddx_sudo_test.cpp
+new file mode 100644
+index 0000000..1109965
+--- /dev/null
++++ b/src/test/ddx_sudo_test.cpp
+@@ -0,0 +1,26 @@
++#include <game/server/ddx_sudo.h>
++
++#include <gtest/gtest.h>
++
++TEST(DdxSudo, KeepsSelfMovementWithoutAnEligibleDirectTarget)
++{
++	using ETarget = DdxSudo::EMovementTarget;
++	EXPECT_EQ(DdxSudo::ResolveMovementTarget(false, true, true, true, true, true), ETarget::SELF);
++	EXPECT_EQ(DdxSudo::ResolveMovementTarget(true, false, true, true, true, true), ETarget::SELF);
++	EXPECT_EQ(DdxSudo::ResolveMovementTarget(true, true, false, true, true, true), ETarget::SELF);
++	EXPECT_EQ(DdxSudo::ResolveMovementTarget(true, true, true, false, true, true), ETarget::SELF);
++}
++
++TEST(DdxSudo, FailsClosedForAnUnavailableDirectTarget)
++{
++	using ETarget = DdxSudo::EMovementTarget;
++	EXPECT_EQ(DdxSudo::ResolveMovementTarget(true, true, true, true, false, true), ETarget::NONE);
++	EXPECT_EQ(DdxSudo::ResolveMovementTarget(true, true, true, true, true, false), ETarget::NONE);
++}
++
++TEST(DdxSudo, MovesAnEligibleDirectlySpectatedPlayer)
++{
++	EXPECT_EQ(
++		DdxSudo::ResolveMovementTarget(true, true, true, true, true, true),
++		DdxSudo::EMovementTarget::SPECTATED_PLAYER);
++}
